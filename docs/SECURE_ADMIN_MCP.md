@@ -72,6 +72,38 @@ The gateway fails closed when MCP persistence is unavailable for audit, confirma
 
 Raw tokens are not stored. JTI, confirmation tokens, idempotency keys, and rate-limit subjects are SHA-256 hashed. Arguments and results are stored through sanitized JSON summaries.
 
+## Android Release Control Plane
+
+Android release automation uses two deliberately separate planes:
+
+- MCP carries typed metadata and lifecycle commands.
+- The APK/AAB bytes use an authenticated resumable HTTP upload. Binary content is never base64-encoded into MCP JSON.
+
+Capabilities and scopes:
+
+- `admin.android.releases.list` and `admin.android.releases.read` require `admin:android_releases:read`.
+- `admin.android.releases.upload`, `admin.android.releases.publish`, and `admin.android.releases.retire` require `admin:android_releases:write` plus the normal dry-run, confirmation, idempotency, and audit controls.
+- Publish and retire are critical operations. Upload prepare/finalize/abort are high-risk operations.
+
+Upload sequence:
+
+1. Call `admin.android.releases.upload` with `action=prepare`, metadata, exact byte size and SHA-256, first as a dry run and then as a confirmed apply.
+2. The apply result contains bounded `chunk_bytes` and an `upload_url`, but no second credential. MCP responses, audit rows, confirmations, and idempotency results never contain an upload token.
+3. Stream each bounded chunk with `PATCH upload_url`, the existing `Authorization: Bearer <MCP token>`, and the exact `Upload-Offset`. The server verifies `mcp:admin` plus `admin:android_releases:write` specifically on this route and rejects gaps, overlaps, oversized chunks, and bytes beyond the declared size. The browser ExtraAdmin flow instead receives an expiring upload-only ticket and sends it in `X-Android-Upload-Token`.
+4. Call the same MCP upload capability with `action=finalize`. Finalization re-reads the file, checks its size and SHA-256, and runs configured `aapt2` and `apksigner` verification.
+5. Read the staged release, dry-run publish, review the effective latest version and required floor, then apply with a fresh idempotency key. Pass `store_release_confirmed=false` for direct. For RuStore, independently verify that the exact version is already available to users in RuStore Console before passing `store_release_confirmed=true`.
+
+Direct-channel publication fails closed unless the artifact is an APK, package metadata matches `ANDROID_RELEASE_PACKAGE_NAME`, signature verification succeeds, and its certificate matches `ANDROID_DIRECT_SIGNING_CERT_SHA256`. A separate optional `ANDROID_RUSTORE_SIGNING_CERT_SHA256` pin applies only to RuStore APKs; the direct pin is never applied across channels. A staged `(channel, version_code, version_name)` release may retain both one APK and one AAB; uploading the missing artifact kind attaches it to that same release rather than consuming a second version. Published/retired releases, a conflicting version name, and duplicate artifact kinds are rejected. AAB files are retained as staging/storage artifacts for an external console workflow and are explicitly unpublishable by the V1 release service; V1 exposes no AAB export/download endpoint.
+
+RuStore publication also fails closed without the explicit store-rollout confirmation. ExtraAdmin disables auto-publish for RuStore and requires the operator to type `RUSTORE LIVE <version_code>` for manual publication. This guard must be satisfied for optional releases too, and especially before advancing the required floor.
+
+Public direct-APK links are always emitted as absolute HTTPS URLs so already-installed bootstrap clients can consume them. `ANDROID_RELEASE_PUBLIC_BASE_URL` may set a dedicated trusted origin; otherwise the service uses configured `PUBLIC_BASE_URL` or `WEBAPP_URL`. It never builds update URLs from the inbound `Host` header.
+
+Mandatory releases advance `min_supported_version_code` monotonically. Optional releases advance only the latest version. For example, after required v10 followed by optional v11, a v9 client is still blocked but downloads v11, while a v10 client may skip v11. Retiring or superseding a release never lowers the floor.
+
+Release storage is configured with `ANDROID_RELEASE_STORAGE_DIR`; use a dedicated persistent mount. Public clients read the no-store manifest at `/api/mobile/client-version` (or `/api/mobile/android/releases/manifest`) and download immutable verified APKs from `/api/mobile/android/releases/{release_id}/apk` with Range support.
+Expired resumable uploads are marked expired and their app-owned `.part` files are removed at server startup and every 15 minutes. Cleanup uses the same per-upload cross-process lock as append/finalize/abort and never follows a path outside the configured release storage root.
+
 ## Protocol Shape
 
 The gateway implements the JSON-RPC subset needed by MCP clients:
@@ -82,7 +114,7 @@ The gateway implements the JSON-RPC subset needed by MCP clients:
 - `resources/list`
 - `resources/read`
 
-Streaming/session extensions are intentionally left for a later iteration; the current control plane is request/response and local-server safe.
+The MCP transport itself remains request/response. Large Android artifacts use the separate scoped resumable HTTP path described above rather than an MCP streaming extension.
 
 ## Audit (2026-06-25)
 

@@ -6,6 +6,7 @@ import logging
 import re
 import secrets
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -20,7 +21,7 @@ BOT_AUTH_CODE_MAX_ATTEMPTS = 5
 BOT_AUTH_CODE_DEFAULT_PURPOSE = "telegram_transfer"
 ACCOUNT_ACTION_TOKEN_MAX_ATTEMPTS = 5
 EMAIL_OUTBOX_MAX_ATTEMPTS = 24
-EXTRAID_SCHEMA_VERSION = 4
+EXTRAID_SCHEMA_VERSION = 5
 _TOKEN_PURPOSE_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 
 
@@ -224,6 +225,7 @@ class ExtraIDDatabase:
         await self._ensure_extra_accounts_table()
         await self._ensure_identity_bindings_table()
         await self._ensure_auth_sessions_table()
+        await self._ensure_anonymous_auth_bootstraps_table()
         await self._ensure_rate_limits_table()
         await self._ensure_bot_auth_codes_table()
         await self._ensure_account_action_tokens_table()
@@ -545,6 +547,28 @@ class ExtraIDDatabase:
         await self._add_column_if_missing("auth_sessions", columns, "revoked BOOLEAN NOT NULL DEFAULT FALSE")
         await self._add_column_if_missing("auth_sessions", columns, "revoked_at TIMESTAMPTZ")
         await self._add_column_if_missing("auth_sessions", columns, "device_label TEXT")
+
+    async def _ensure_anonymous_auth_bootstraps_table(self) -> None:
+        await self.execute(
+            """
+            CREATE TABLE IF NOT EXISTS anonymous_auth_bootstraps (
+                bootstrap_id     TEXT PRIMARY KEY,
+                secret_hash      TEXT NOT NULL,
+                user_id          BIGINT NOT NULL,
+                session_id       UUID REFERENCES auth_sessions(session_id) ON DELETE SET NULL,
+                generation       BIGINT NOT NULL DEFAULT 0,
+                created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_used_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                disabled_at      TIMESTAMPTZ
+            )
+            """
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_anonymous_auth_bootstraps_user_id
+            ON anonymous_auth_bootstraps(user_id)
+            """
+        )
 
     async def _ensure_rate_limits_table(self) -> None:
         if not await self.fetchval("SELECT to_regclass('public.extraid_rate_limits')"):
@@ -982,6 +1006,107 @@ class ExtraIDDatabase:
                 )
                 return "changed"
 
+    async def change_unverified_email_and_enqueue_verification(
+        self,
+        extra_account_id,
+        *,
+        new_email: str,
+        expected_old_email: str,
+    ) -> str:
+        """Change a pending address and replace its verification work atomically.
+
+        A fresh outbox row gets a new id.  Consequently a worker that leased the
+        old row before this transaction cannot later acknowledge/delete the new
+        delivery.  All links and codes addressed to the previous email become
+        unusable in the same commit as the address change.
+        """
+        if not self._pool:
+            raise RuntimeError("ExtraID DB not connected")
+        extra_account_id = _coerce_uuid(extra_account_id)
+        new_email = str(new_email).strip().lower()
+        expected_old_email = str(expected_old_email).strip().lower()
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                # This is the same per-account lock used by token issuance and
+                # the delivery guard.  It serializes a change with an email that
+                # is already being prepared or handed to the provider.
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    str(extra_account_id),
+                )
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    new_email,
+                )
+                duplicate = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM extra_accounts
+                    WHERE LOWER(email) = LOWER($1)
+                      AND id <> $2
+                      AND deleted_at IS NULL
+                    LIMIT 1
+                    """,
+                    new_email,
+                    extra_account_id,
+                )
+                if duplicate:
+                    return "email_taken"
+                updated = await conn.fetchrow(
+                    """
+                    UPDATE extra_accounts
+                    SET email = $1,
+                        updated_at = NOW(),
+                        verification_source = 'pending'
+                    WHERE id = $2
+                      AND LOWER(email) = LOWER($3)
+                      AND is_email_verified = FALSE
+                      AND email_verification_required = TRUE
+                      AND deleted_at IS NULL
+                    RETURNING id
+                    """,
+                    new_email,
+                    extra_account_id,
+                    expected_old_email,
+                )
+                if not updated:
+                    return "email_change_not_allowed"
+                await conn.execute(
+                    """
+                    UPDATE account_action_tokens
+                    SET consumed_at = COALESCE(consumed_at, NOW())
+                    WHERE extra_account_id = $1
+                      AND purpose IN (
+                          'verify_email',
+                          'cancel_registration',
+                          'password_reset'
+                      )
+                      AND consumed_at IS NULL
+                    """,
+                    extra_account_id,
+                )
+                # Never update the old row in place: a worker may still hold
+                # its id and complete it after this transaction commits.
+                await conn.execute(
+                    """
+                    DELETE FROM extraid_email_outbox
+                    WHERE extra_account_id = $1
+                      AND purpose IN ('verify_email', 'password_reset')
+                    """,
+                    extra_account_id,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO extraid_email_outbox (
+                        extra_account_id, purpose, email_snapshot
+                    )
+                    VALUES ($1, 'verify_email', $2)
+                    """,
+                    extra_account_id,
+                    new_email,
+                )
+                return "changed"
+
     async def get_synthetic_user_id(self) -> int:
         user_id = int(await self.fetchval("SELECT nextval('synthetic_user_id_seq')"))
         if user_id < SYNTHETIC_USER_ID_MIN:
@@ -1272,6 +1397,15 @@ class ExtraIDDatabase:
                     """,
                     int(user_id),
                 )
+                await conn.execute(
+                    """
+                    UPDATE anonymous_auth_bootstraps
+                    SET disabled_at = COALESCE(disabled_at, NOW()),
+                        last_used_at = NOW()
+                    WHERE user_id = $1
+                    """,
+                    int(user_id),
+                )
                 return True
 
     async def complete_account_deletion(self, extra_account_id) -> None:
@@ -1449,6 +1583,68 @@ class ExtraIDDatabase:
         except Exception:
             return 0
 
+    @asynccontextmanager
+    async def account_email_delivery_guard(
+        self,
+        *,
+        extra_account_id,
+        email_snapshot: str,
+        token_ids: list,
+    ):
+        """Serialize provider handoff with a pending account email change.
+
+        The transaction intentionally stays open only while the provider call
+        is in flight.  This is a low-volume security flow, and holding the
+        advisory lock guarantees that an address change either happens before
+        delivery (making this guard fail) or after delivery and consumes every
+        token sent to the previous address before returning to the client.
+        """
+        if not self._pool:
+            raise RuntimeError("ExtraID DB not connected")
+        extra_account_id = _coerce_uuid(extra_account_id)
+        email_snapshot = str(email_snapshot).strip().lower()
+        normalized_token_ids = [_coerce_uuid(value) for value in token_ids]
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    str(extra_account_id),
+                )
+                account_matches = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM extra_accounts
+                    WHERE id = $1
+                      AND LOWER(email) = LOWER($2)
+                      AND deleted_at IS NULL
+                    """,
+                    extra_account_id,
+                    email_snapshot,
+                )
+                active_token_count = 0
+                if account_matches and normalized_token_ids:
+                    active_token_count = int(
+                        await conn.fetchval(
+                            """
+                            SELECT COUNT(*)
+                            FROM account_action_tokens
+                            WHERE extra_account_id = $1
+                              AND id = ANY($2::uuid[])
+                              AND LOWER(email_snapshot) = LOWER($3)
+                              AND consumed_at IS NULL
+                              AND expires_at > NOW()
+                            """,
+                            extra_account_id,
+                            normalized_token_ids,
+                            email_snapshot,
+                        )
+                        or 0
+                    )
+                yield bool(
+                    account_matches
+                    and active_token_count == len(normalized_token_ids)
+                )
+
     async def create_account_action_token(
         self,
         *,
@@ -1507,11 +1703,14 @@ class ExtraIDDatabase:
                     WHERE extra_account_id = $1
                       AND purpose = $2
                       AND created_at > NOW() - make_interval(secs => $3::int)
+                      AND consumed_at IS NULL
+                      AND LOWER(email_snapshot) = LOWER($4)
                     LIMIT 1
                     """,
                     extra_account_id,
                     purpose,
                     cooldown_seconds,
+                    email_snapshot,
                 )
                 if recent:
                     return False
@@ -1788,6 +1987,19 @@ class ExtraIDDatabase:
                         """,
                         int(row["user_id"]),
                     )
+                    # Password reset is a full credential reset.  Leaving an
+                    # installation bootstrap active would let its old secret
+                    # mint a fresh anonymous JWT immediately after every
+                    # session was revoked.
+                    await conn.execute(
+                        """
+                        UPDATE anonymous_auth_bootstraps
+                        SET disabled_at = COALESCE(disabled_at, NOW()),
+                            last_used_at = NOW()
+                        WHERE user_id = $1
+                        """,
+                        int(row["user_id"]),
+                    )
                 elif purpose == "cancel_registration":
                     cancelled = await conn.fetchrow(
                         """
@@ -1887,6 +2099,206 @@ class ExtraIDDatabase:
     # ═══════════════════════════════════════════════════════════════════
     # Auth sessions
     # ═══════════════════════════════════════════════════════════════════
+
+    async def get_anonymous_auth_bootstrap(self, bootstrap_id: str) -> dict | None:
+        row = await self.fetchrow(
+            """
+            SELECT bootstrap_id, secret_hash, user_id, session_id,
+                   generation, disabled_at
+            FROM anonymous_auth_bootstraps
+            WHERE bootstrap_id = $1
+            """,
+            str(bootstrap_id),
+        )
+        return dict(row) if row else None
+
+    async def claim_anonymous_auth_bootstrap(
+        self,
+        *,
+        bootstrap_id: str,
+        secret_hash: str,
+        proposed_user_id: int,
+    ) -> dict:
+        """Create an installation-to-user mapping or return the race winner."""
+        if not self._pool:
+            raise RuntimeError("ExtraID DB not connected")
+        bootstrap_id = str(bootstrap_id)
+        secret_hash = str(secret_hash)
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"anonymous-bootstrap:{bootstrap_id}",
+                )
+                existing = await conn.fetchrow(
+                    """
+                    SELECT bootstrap_id, secret_hash, user_id, session_id,
+                           generation, disabled_at
+                    FROM anonymous_auth_bootstraps
+                    WHERE bootstrap_id = $1
+                    FOR UPDATE
+                    """,
+                    bootstrap_id,
+                )
+                if existing:
+                    return dict(existing)
+                created = await conn.fetchrow(
+                    """
+                    INSERT INTO anonymous_auth_bootstraps (
+                        bootstrap_id, secret_hash, user_id
+                    )
+                    VALUES ($1, $2, $3)
+                    RETURNING bootstrap_id, secret_hash, user_id, session_id,
+                              generation, disabled_at
+                    """,
+                    bootstrap_id,
+                    secret_hash,
+                    int(proposed_user_id),
+                )
+                return dict(created)
+
+    async def create_anonymous_bootstrap_session(
+        self,
+        *,
+        bootstrap_id: str,
+        secret_hash: str,
+        session_id,
+        token_hash: str,
+        expires_at,
+        device_label: str | None = None,
+    ) -> dict:
+        """Rotate the recoverable anonymous session in one transaction.
+
+        The raw installation secret and JWT never enter the database.  A retry
+        proves knowledge of the installation secret, gets a new JWT/session,
+        and invalidates every older anonymous JWT for the same game user.
+        """
+        if not self._pool:
+            raise RuntimeError("ExtraID DB not connected")
+        bootstrap_id = str(bootstrap_id)
+        secret_hash = str(secret_hash)
+        session_id = _coerce_uuid(session_id)
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"anonymous-bootstrap:{bootstrap_id}",
+                )
+                bootstrap = await conn.fetchrow(
+                    """
+                    SELECT bootstrap_id, secret_hash, user_id, generation,
+                           disabled_at
+                    FROM anonymous_auth_bootstraps
+                    WHERE bootstrap_id = $1
+                    FOR UPDATE
+                    """,
+                    bootstrap_id,
+                )
+                if not bootstrap or not hmac.compare_digest(
+                    str(bootstrap["secret_hash"]),
+                    secret_hash,
+                ):
+                    return {"status": "invalid_bootstrap"}
+                if bootstrap["disabled_at"] is not None:
+                    return {
+                        "status": "bootstrap_upgraded",
+                        "user_id": int(bootstrap["user_id"]),
+                    }
+                user_id = int(bootstrap["user_id"])
+                await conn.execute(
+                    """
+                    INSERT INTO auth_sessions (
+                        session_id, user_id, auth_method, token_hash,
+                        expires_at, device_label
+                    )
+                    VALUES ($1, $2, 'android_anonymous', $3, $4, $5)
+                    """,
+                    session_id,
+                    user_id,
+                    str(token_hash),
+                    expires_at,
+                    device_label,
+                )
+                await conn.execute(
+                    """
+                    UPDATE auth_sessions
+                    SET revoked = TRUE, revoked_at = NOW()
+                    WHERE user_id = $1
+                      AND auth_method = 'android_anonymous'
+                      AND session_id <> $2
+                      AND revoked = FALSE
+                    """,
+                    user_id,
+                    session_id,
+                )
+                updated = await conn.fetchrow(
+                    """
+                    UPDATE anonymous_auth_bootstraps
+                    SET session_id = $2,
+                        generation = generation + 1,
+                        last_used_at = NOW()
+                    WHERE bootstrap_id = $1
+                    RETURNING user_id, generation
+                    """,
+                    bootstrap_id,
+                    session_id,
+                )
+                return {
+                    "status": "created",
+                    "user_id": int(updated["user_id"]),
+                    "generation": int(updated["generation"]),
+                }
+
+    async def create_email_password_session(
+        self,
+        *,
+        session_id,
+        user_id: int,
+        token_hash: str,
+        expires_at,
+        device_label: str | None = None,
+    ) -> dict:
+        """Create a stronger session and retire only anonymous credentials."""
+        if not self._pool:
+            raise RuntimeError("ExtraID DB not connected")
+        session_id = _coerce_uuid(session_id)
+        user_id = int(user_id)
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    INSERT INTO auth_sessions (
+                        session_id, user_id, auth_method, token_hash,
+                        expires_at, device_label
+                    )
+                    VALUES ($1, $2, 'email_password', $3, $4, $5)
+                    """,
+                    session_id,
+                    user_id,
+                    str(token_hash),
+                    expires_at,
+                    device_label,
+                )
+                await conn.execute(
+                    """
+                    UPDATE auth_sessions
+                    SET revoked = TRUE, revoked_at = NOW()
+                    WHERE user_id = $1
+                      AND auth_method = 'android_anonymous'
+                      AND revoked = FALSE
+                    """,
+                    user_id,
+                )
+                await conn.execute(
+                    """
+                    UPDATE anonymous_auth_bootstraps
+                    SET disabled_at = COALESCE(disabled_at, NOW()),
+                        last_used_at = NOW()
+                    WHERE user_id = $1
+                    """,
+                    user_id,
+                )
+                return {"session_id": session_id}
 
     async def create_auth_session(
         self, user_id: int, auth_method: str, token_hash: str,

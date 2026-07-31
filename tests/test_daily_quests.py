@@ -12,7 +12,7 @@ def _make_db():
 
 def test_schema_version_includes_daily_quests_and_returnclock():
     from infrastructure.database import SCHEMA_VERSION
-    assert SCHEMA_VERSION == 52
+    assert SCHEMA_VERSION == 55
 
 
 def test_daily_quests_constant_has_five_fixed_quests():

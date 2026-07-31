@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
+import subprocess
 import time
 import uuid
 from types import SimpleNamespace
@@ -128,8 +129,15 @@ def test_shared_webapp_bootstraps_max_before_render_and_keeps_identity_bound():
     server = Path("web/server.py").read_text(encoding="utf-8")
 
     assert '<script src="https://st.max.ru/js/max-web-app.js"></script>' in index
-    assert '<script src="platform-bridge.js"></script>' in index
+    assert '<script src="platform-bridge.js?v=auth-platform-20260730"></script>' in index
     assert "await window.ExtraArenaPlatform.ensureAuthSession();" in index
+    bootstrap = index.split("const renderExtraArenaApp = () =>", 1)[1].split(
+        "</script>",
+        1,
+    )[0]
+    assert bootstrap.index("persistAppAuthFromUrl();") < bootstrap.index(
+        "await window.ExtraArenaPlatform.ensureAuthSession();"
+    )
     assert "if (isMaxGameClient())" in index
     assert "add('auth', getMaxAuthToken(), 'max');" in index
     assert "const isPlatformBound = isPlatformFlow" in index
@@ -140,6 +148,278 @@ def test_shared_webapp_bootstraps_max_before_render_and_keeps_identity_bound():
     assert "register_max_routes(app)" in server
     assert "await platform.ensureAuthSession();" in arena
     assert "window.ExtraArenaPlatform?.isMax?.()" in arena
+
+
+def test_platform_bridge_resolves_live_launch_before_stale_other_sdk_data():
+    script = r"""
+const fs = require('fs');
+const vm = require('vm');
+const bridge = fs.readFileSync('webapp/platform-bridge.js', 'utf8');
+
+async function runScenario(options) {
+  const storage = new Map(Object.entries(options.storage || {}));
+  const sessionStorage = {
+    getItem(key) { return storage.has(key) ? storage.get(key) : null; },
+    setItem(key, value) { storage.set(key, String(value)); },
+    removeItem(key) { storage.delete(key); },
+  };
+  const fetchCalls = [];
+  const location = {href: options.url};
+  const window = {
+    location,
+    performance: {
+      getEntriesByType(type) {
+        return type === 'navigation' && options.navigationUrl
+          ? [{name: options.navigationUrl}]
+          : [];
+      },
+    },
+    Telegram: {
+      WebApp: {
+        initData: options.telegramInit || '',
+        initDataUnsafe: {user: {id: 101}},
+      },
+    },
+    WebApp: {
+      initData: options.maxInit || '',
+      initDataUnsafe: {user: {id: 202}},
+      platform: 'test',
+      version: '1',
+    },
+    dispatchEvent() {},
+  };
+  const context = {
+    window,
+    sessionStorage,
+    URL,
+    URLSearchParams,
+    CustomEvent: function CustomEvent() {},
+    fetch: async (...args) => {
+      fetchCalls.push(args);
+      return {ok: true, status: 200, json: async () => ({token: 'max-jwt'})};
+    },
+    console,
+  };
+  vm.createContext(context);
+  vm.runInContext(bridge, context);
+  await Promise.resolve();
+  await Promise.resolve();
+  return {
+    kind: window.ExtraArenaPlatform.kind(),
+    initData: window.ExtraArenaPlatform.getInitData(),
+    maxAuthCalls: fetchCalls.filter(([url]) => url === '/api/auth/max').length,
+    storedPlatform: storage.get('extraarena_launch_platform') || null,
+  };
+}
+
+(async () => {
+  const results = {
+    telegramLive: await runScenario({
+      url: 'https://game.example/#tgWebAppData=tg-live',
+      telegramInit: 'tg-live',
+      maxInit: 'max-stale',
+    }),
+    maxLive: await runScenario({
+      url: 'https://game.example/#WebAppData=max-live',
+      telegramInit: 'tg-stale',
+      maxInit: 'max-live',
+    }),
+    navigationMarker: await runScenario({
+      url: 'https://game.example/',
+      navigationUrl: 'https://game.example/#tgWebAppData=tg-live',
+      telegramInit: 'tg-live',
+      maxInit: 'max-stale',
+    }),
+    arenaInherited: await runScenario({
+      url: 'https://game.example/arena?id=match-1',
+      storage: {extraarena_launch_platform: 'telegram'},
+      telegramInit: 'tg-live',
+      maxInit: 'max-stale',
+    }),
+    ambiguous: await runScenario({
+      url: 'https://game.example/',
+      telegramInit: 'tg-stale',
+      maxInit: 'max-stale',
+    }),
+    conflictingMarkers: await runScenario({
+      url: 'https://game.example/#tgWebAppData=tg-live&WebAppData=max-live',
+      storage: {extraarena_launch_platform: 'max'},
+      telegramInit: 'tg-live',
+      maxInit: 'max-live',
+    }),
+    emptyMarker: await runScenario({
+      url: 'https://game.example/#WebAppData=',
+      storage: {extraarena_launch_platform: 'telegram'},
+      telegramInit: 'tg-stale',
+      maxInit: 'max-stale',
+    }),
+    querySpoofIgnored: await runScenario({
+      url: 'https://game.example/?WebAppData=max-live',
+      storage: {extraarena_launch_platform: 'telegram'},
+      telegramInit: 'tg-live',
+      maxInit: 'max-live',
+    }),
+  };
+  process.stdout.write(JSON.stringify(results));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+"""
+    result = json.loads(
+        subprocess.check_output(["node", "-e", script], text=True, cwd=Path.cwd())
+    )
+
+    assert result["telegramLive"] == {
+        "kind": "telegram",
+        "initData": "tg-live",
+        "maxAuthCalls": 0,
+        "storedPlatform": "telegram",
+    }
+    assert result["maxLive"] == {
+        "kind": "max",
+        "initData": "max-live",
+        "maxAuthCalls": 1,
+        "storedPlatform": "max",
+    }
+    assert result["navigationMarker"]["kind"] == "telegram"
+    assert result["navigationMarker"]["maxAuthCalls"] == 0
+    assert result["arenaInherited"]["kind"] == "telegram"
+    assert result["arenaInherited"]["initData"] == "tg-live"
+    assert result["ambiguous"] == {
+        "kind": "web",
+        "initData": None,
+        "maxAuthCalls": 0,
+        "storedPlatform": None,
+    }
+    assert result["conflictingMarkers"] == {
+        "kind": "web",
+        "initData": None,
+        "maxAuthCalls": 0,
+        "storedPlatform": None,
+    }
+    assert result["emptyMarker"] == {
+        "kind": "web",
+        "initData": None,
+        "maxAuthCalls": 0,
+        "storedPlatform": None,
+    }
+    assert result["querySpoofIgnored"] == {
+        "kind": "telegram",
+        "initData": "tg-live",
+        "maxAuthCalls": 0,
+        "storedPlatform": "telegram",
+    }
+
+
+def test_shared_auth_consumers_honor_resolved_platform():
+    index = Path("webapp/index.html").read_text(encoding="utf-8")
+    arena = Path("webapp/arena.js").read_text(encoding="utf-8")
+
+    telegram_helper = index.split("function getTelegramInitData()", 1)[1].split(
+        "function getMaxAuthToken",
+        1,
+    )[0]
+    arena_bootstrap = arena.split("document.addEventListener('DOMContentLoaded'", 1)[1].split(
+        "console.log('[ARENA] Match ID:'",
+        1,
+    )[0]
+    browser_guard = arena.split("function isUnsupportedExternalArenaBrowser", 1)[1].split(
+        "function showArenaLaunchError",
+        1,
+    )[0]
+
+    assert "!platform.isTelegram?.()" in telegram_helper
+    assert "platform?.getInitData?.()" in telegram_helper
+    assert "platform?.isTelegram?.()" in arena_bootstrap
+    assert "window.ExtraArenaPlatform?.isTelegram?.()" in browser_guard
+    assert '<script src="platform-bridge.js?v=auth-platform-20260730"></script>' in Path(
+        "webapp/arena.html"
+    ).read_text(encoding="utf-8")
+
+
+def test_max_launch_scrubs_foreign_url_auth_before_generic_persistence():
+    index = Path("webapp/index.html").read_text(encoding="utf-8")
+    persist_block = index.split("function persistAppAuthFromUrl()", 1)[1].split(
+        "async function loadExtraIDProfile",
+        1,
+    )[0]
+    max_guard = persist_block.split("if (isMaxGameClient())", 1)[1].split(
+        "if (getTelegramInitData())",
+        1,
+    )[0]
+    candidates_block = index.split("function getUiAuthCandidates", 1)[1].split(
+        "function resolveUserId",
+        1,
+    )[0]
+
+    assert persist_block.index("if (isMaxGameClient())") < persist_block.index(
+        "const token = getUrlAuthToken();"
+    )
+    assert "sessionStorage.removeItem(EXTRA_URL_AUTH_SESSION_KEY)" in max_guard
+    assert "sessionStorage.removeItem(EXTRA_ID_TOKEN_SESSION_KEY)" in max_guard
+    assert "localStorage.removeItem('extra_id_token')" in max_guard
+    assert "clean.searchParams.delete('_auth')" in max_guard
+    assert "history.replaceState(null, '', clean.pathname + clean.search + clean.hash)" in max_guard
+    assert "return;" in max_guard
+    assert "if (isMaxGameClient())" in candidates_block
+    assert "add('auth', getMaxAuthToken(), 'max');" in candidates_block
+    assert candidates_block.index("add('auth', getMaxAuthToken(), 'max');") < candidates_block.index(
+        "return candidates;"
+    )
+
+
+def test_max_real_button_taps_delegate_haptics_without_android_double_fire():
+    index = Path("webapp/index.html").read_text(encoding="utf-8")
+    bridge = Path("webapp/platform-bridge.js").read_text(encoding="utf-8")
+    haptic_block = index.split("function playMaxControlHaptic(target)", 1)[1].split(
+        "// Глобальный обработчик",
+        1,
+    )[0]
+    pointer_block = index.split(
+        "document.addEventListener('pointerdown', e => {",
+        1,
+    )[1].split("}, {passive: true});", 1)[0]
+    click_block = index.split(
+        "document.addEventListener('click', e => {",
+        1,
+    )[1].split("}, {passive: true});", 1)[0]
+
+    assert "isAndroidAppShell()) return;" in haptic_block
+    assert "if (!platform?.isMax?.()) return;" in haptic_block
+    assert "!window.isHapticsEnabled()" in haptic_block
+    assert "control.closest('[data-no-global-haptic]')" in haptic_block
+    assert "control.getAttribute('data-haptic') || 'selection'" in haptic_block
+    assert "platform.selection?.()" in haptic_block
+    assert "platform.impact?.(impact)" in haptic_block
+    assert "platform.notification?.(feedback)" in haptic_block
+    assert "window.playClick();" in pointer_block
+    assert "playMaxControlHaptic(control);" not in pointer_block
+    assert "if (!e.isTrusted) return;" in click_block
+    assert "playMaxControlHaptic(control);" in click_block
+    assert "aria-label=\"Меню\"" in index
+    assert haptic_block.index("isAndroidAppShell()) return;") < haptic_block.index(
+        "platform.selection?.()"
+    )
+    assert haptic_block.index("!window.isHapticsEnabled()") < haptic_block.index(
+        "platform.selection?.()"
+    )
+
+    assert "impactOccurred(style || 'light')" in bridge
+    assert "notificationOccurred(type)" in bridge
+    assert "selectionChanged()" in bridge
+
+
+def test_max_settings_expose_haptic_toggle_in_both_native_shells():
+    index = Path("webapp/index.html").read_text(encoding="utf-8")
+    settings_block = index.split("const SettingsScreen =", 1)[1].split(
+        "// CASE OPENING OVERLAY",
+        1,
+    )[0]
+
+    assert "const isMaxShell = isMaxGameClient();" in settings_block
+    assert "const canUseHaptics = isAndroidShell || isMaxShell;" in settings_block
+    assert '{canUseHaptics && <Row label="Виброотдача"' in settings_block
 
 
 @pytest.mark.asyncio

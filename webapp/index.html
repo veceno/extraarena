@@ -6,7 +6,7 @@
 <title>ExtraArena</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src="https://st.max.ru/js/max-web-app.js"></script>
-<script src="platform-bridge.js"></script>
+<script src="platform-bridge.js?v=auth-platform-20260730"></script>
 <script src="safe-area.js"></script>
 <script src="matchmaking-tips.config.js"></script>
 <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" integrity="sha384-DGyLxAyjq0f9SPpVevD6IgztCFlnMF6oW/XQGmfe+IsZ8TqEiDrcHkMLKI6fiB/Z" crossorigin="anonymous"></script>
@@ -230,6 +230,49 @@ html, body {
 @keyframes onbSpotlightGlow {
   0%,100%{box-shadow:0 0 0 9999px rgba(5,3,14,0.42),0 0 22px rgba(245,146,30,0.4),inset 0 0 0 1px rgba(255,255,255,0.2)}
   50%{box-shadow:0 0 0 9999px rgba(5,3,14,0.42),0 0 38px rgba(245,146,30,0.75),inset 0 0 0 1px rgba(255,255,255,0.3)}
+}
+.newbie-path-floating {
+  position: fixed;
+  right: calc(14px + var(--ea-safe-right));
+  bottom: calc(78px + var(--ea-safe-bottom-soft));
+  z-index: 120;
+  min-height: 44px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.28);
+  background: linear-gradient(160deg,#ffc870 0%,#f5921e 42%,#d97510 100%);
+  color: #201005;
+  padding: 0 13px;
+  font-size: 12px;
+  font-weight: 1000;
+  font-family: 'Exo 2', sans-serif;
+  box-shadow: 0 12px 28px rgba(0,0,0,0.34),0 0 18px rgba(245,146,30,0.33),inset 0 1px 0 rgba(255,255,255,0.4);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  animation: onbClaimablePulse 2.4s ease-in-out infinite;
+}
+.newbie-path-floating:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 2px;
+}
+@media (max-width: 520px) {
+  .newbie-path-floating {
+    position: static;
+    right: auto;
+    bottom: auto;
+    z-index: auto;
+    width: auto;
+    min-width: 0;
+    height: 46px;
+    min-height: 46px;
+    margin: 6px calc(12px + var(--ea-safe-right)) 6px calc(12px + var(--ea-safe-left));
+    padding: 0 13px;
+    justify-content: center;
+    align-self: stretch;
+    flex-shrink: 0;
+    border-radius: 12px;
+  }
 }
 @keyframes tipSwap { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
 @keyframes preBattleBgPulse { 0%,100%{opacity:0.35;transform:scale(1)} 50%{opacity:0.65;transform:scale(1.06)} }
@@ -3938,6 +3981,20 @@ let _musicManualStop = false;
 let _bgMusicWatchdogInstalled = false;
 window._musicEnabled = true;
 window._sfxEnabled = true;
+function hasNativeMenuMusic() {
+  try {
+    return !!(window.ExtraArenaApp
+      && typeof window.ExtraArenaApp.setMenuMusicEnabled === 'function'
+      && typeof window.ExtraArenaApp.setAudioScene === 'function');
+  } catch(e) {
+    return false;
+  }
+}
+try {
+  if (hasNativeMenuMusic() && typeof window.ExtraArenaApp.isMenuMusicEnabled === 'function') {
+    window._musicEnabled = window.ExtraArenaApp.isMenuMusicEnabled() !== false;
+  }
+} catch(e) {}
 try {
   window._hapticsEnabled = localStorage.getItem('extra_haptics_enabled') !== 'false';
 } catch(e) {
@@ -3975,6 +4032,15 @@ function ensureBgMusicWatchdog(audio) {
 
 window.startBgMusic = function() {
   if (!window._musicEnabled) return;
+  if (hasNativeMenuMusic()) {
+    try {
+      window.ExtraArenaApp.setMenuMusicEnabled(true);
+      window.ExtraArenaApp.setAudioScene('menu');
+      _musicManualStop = false;
+      _musicStarted = true;
+    } catch(e) {}
+    return;
+  }
   const audio = document.getElementById('bg-music');
   if (!audio) return;
   ensureBgMusicWatchdog(audio);
@@ -3999,6 +4065,11 @@ window.startBgMusic = function() {
 
 window.stopBgMusic = function() {
   _musicManualStop = true;
+  if (hasNativeMenuMusic()) {
+    try { window.ExtraArenaApp.setAudioScene('silent'); } catch(e) {}
+    _musicStarted = false;
+    return;
+  }
   const audio = document.getElementById('bg-music');
   if (audio) { audio.pause(); audio.currentTime = 0; _musicStarted = false; }
 };
@@ -4035,6 +4106,9 @@ window.addEventListener('pagehide', () => window.ExtraArenaAppPause());
 
 window.toggleMusic = function(enabled) {
   window._musicEnabled = enabled;
+  if (hasNativeMenuMusic()) {
+    try { window.ExtraArenaApp.setMenuMusicEnabled(enabled); } catch(e) {}
+  }
   if (enabled) window.startBgMusic();
   else window.stopBgMusic();
 };
@@ -4094,10 +4168,44 @@ window._playCaseSfx = function(id, options) {
 window.playClick = function() {
   window._playSfx('btn-sound');
 };
-// Глобальный обработчик — звук на каждую кнопку
+function playMaxControlHaptic(target) {
+  const platform = window.ExtraArenaPlatform;
+  if (typeof isAndroidAppShell === 'function' && isAndroidAppShell()) return;
+  if (!platform?.isMax?.()) return;
+  if (typeof window.isHapticsEnabled === 'function' && !window.isHapticsEnabled()) return;
+  const control = target?.closest?.('button, [role="button"]');
+  if (!control || control.disabled || control.getAttribute('aria-disabled') === 'true') return;
+  // MAX-only delegation keeps Android's native/button-specific handlers single-fire.
+  // A control with its own MAX feedback can opt out of delegation explicitly.
+  if (control.closest('[data-no-global-haptic]')) return;
+  const feedback = String(control.getAttribute('data-haptic') || 'selection').toLowerCase();
+  if (feedback === 'none') return;
+  if (feedback === 'selection') {
+    platform.selection?.();
+    return;
+  }
+  if (['success', 'warning', 'error'].includes(feedback)) {
+    platform.notification?.(feedback);
+    return;
+  }
+  const impact = ['light', 'medium', 'heavy', 'rigid', 'soft'].includes(feedback)
+    ? feedback
+    : 'light';
+  platform.impact?.(impact);
+}
+// Глобальный обработчик — звук начинается сразу, когда пользователь нажал кнопку.
 document.addEventListener('pointerdown', e => {
-  if (e.target.closest('[data-no-global-click-sound]')) return;
-  if (e.target.closest('button, [role="button"]')) window.playClick();
+  const control = e.target.closest('button, [role="button"]');
+  if (!control) return;
+  if (!control.closest('[data-no-global-click-sound]')) window.playClick();
+}, {passive: true});
+// MAX-haptic срабатывает только после завершённого основного клика: прокрутка,
+// pointercancel и контекстный клик не должны подтверждаться вибрацией.
+document.addEventListener('click', e => {
+  if (!e.isTrusted) return;
+  const control = e.target.closest('button, [role="button"]');
+  if (!control) return;
+  playMaxControlHaptic(control);
 }, {passive: true});
 // ────────────────────────────────────────────────────────
 
@@ -4216,6 +4324,7 @@ window.startBattle = async function(profile, deckId, mode) {
 
   var userId = profile?.user_id || window._getUserId();
   var authData = resolveExtraIDAuthData() || '';
+  var pollAuth = resolveUiAuth(authData);
   var body = { user_id: userId, _auth: authData, trophies: profile?.trophies || 0, game_mode: mode || 'classic' };
   const parsedDeck = parseInt(deckId);
   if (deckId && !isNaN(parsedDeck)) body.selected_deck_id = parsedDeck;
@@ -4279,7 +4388,7 @@ window.startBattle = async function(profile, deckId, mode) {
           return;
         }
         try {
-          var r = await fetch(buildUiAuthUrl('/api/match/status?id=' + encodeURIComponent(matchId), {type:'auth', value:authData, source:'match_poll'}));
+          var r = await fetch(buildUiAuthUrl('/api/match/status?id=' + encodeURIComponent(matchId), pollAuth));
           if (!r.ok) return;
           var s = await r.json();
           if (s.status === 'found' && s.match_id) handleFound(s);
@@ -4392,7 +4501,9 @@ window._openPreBattle = function(data) {
 window._rootSetPreBattle = null;
 
 function getTelegramInitData() {
-  const initData = window.Telegram?.WebApp?.initData;
+  const platform = window.ExtraArenaPlatform;
+  if (platform?.kind && !platform.isTelegram?.()) return null;
+  const initData = platform?.getInitData?.() || window.Telegram?.WebApp?.initData;
   return initData && initData.trim() ? initData : null;
 }
 
@@ -4757,6 +4868,21 @@ function resolveExtraIDRegistrationAuthData() {
 }
 
 function persistAppAuthFromUrl() {
+  if (isMaxGameClient()) {
+    // MAX owns one exchanged internal session. Never reinterpret a foreign
+    // launch _auth as an ExtraID token, and purge values persisted by older UI.
+    try {
+      sessionStorage.removeItem(EXTRA_URL_AUTH_SESSION_KEY);
+      sessionStorage.removeItem(EXTRA_ID_TOKEN_SESSION_KEY);
+    } catch (_) {}
+    try { localStorage.removeItem('extra_id_token'); } catch (_) {}
+    const clean = new URL(location.href);
+    if (clean.searchParams.has('_auth')) {
+      clean.searchParams.delete('_auth');
+      history.replaceState(null, '', clean.pathname + clean.search + clean.hash);
+    }
+    return;
+  }
   if (getTelegramInitData()) {
     try { sessionStorage.removeItem(EXTRA_URL_AUTH_SESSION_KEY); } catch (_) {}
     const clean = new URL(location.href);
@@ -5352,7 +5478,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=62d0b7391aa7">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=74f3c241661e">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -6172,6 +6298,8 @@ const SettingsScreen = ({onClose, profile}) => {
   const settingsLoaded = profile?.settings != null;
   const TALKIE_DISABLE_BY_DEFAULT_STORAGE_KEY = 'extraarena.talkie.disableByDefault';
   const isAndroidShell = isAndroidAppShell();
+  const isMaxShell = isMaxGameClient();
+  const canUseHaptics = isAndroidShell || isMaxShell;
   const canUseTelegramDelivery = isAndroidShell && profile?.extraid_linked_telegram === true;
   const [notifs, setNotifs] = React.useState({
     shop:              s.notif_shop              ?? false,
@@ -6444,7 +6572,7 @@ const SettingsScreen = ({onClose, profile}) => {
         <Section icon="sound" title="Звук" eyebrow="Аудио в меню и боях">
           <Row label="Музыка" hint="Фоновое сопровождение" value={music} onChange={v=>{setMusic(v);window.toggleMusic(v);}}/>
           <Row label="Звуковые эффекты" hint="Нажатия, бой и награды" value={sfx} onChange={v=>{setSfx(v);window.toggleSfx(v);}}/>
-          {isAndroidShell && <Row label="Виброотдача" hint="Нажатия и важные события" value={haptics} onChange={v=>{setHaptics(v);window.toggleHaptics(v);}}/>}
+          {canUseHaptics && <Row label="Виброотдача" hint="Нажатия и важные события" value={haptics} onChange={v=>{setHaptics(v);window.toggleHaptics(v);}}/>}
         </Section>
         <Section icon="user" title="Социальные" eyebrow="Никнейм и входящие запросы">
           <Row label="Запросы в друзья" hint="Блокировать новые приглашения" value={blockFr} onChange={setBlockFr}/>
@@ -19733,7 +19861,6 @@ const App = () => {
     onboardingStartingRef.current = true;
     setOnboardingStarting(true);
     try {
-      window.__analytics?.onboarding('welcome_completed', true, null, {source:'onboarding_gate'});
       await fetch(buildUiAuthUrl('/api/onboarding/welcome/complete', auth), {method:'POST'});
       const response = await fetch(buildUiAuthUrl('/api/onboarding/tutorial/start', auth), {method:'POST'});
       if (!response.ok) throw new Error('tutorial_start_failed');
@@ -19779,7 +19906,6 @@ const App = () => {
         }
         if (data.onboarding) setOnboarding(data.onboarding);
         setShowNewbiePath(true);
-        window.__analytics?.onboarding('mandatory_onboarding_completed', true, null, {source:'menu_tour'});
         window.__analytics?.onboarding('newbie_path_opened', false, null, {source:'mandatory_complete'});
         return;
       }
@@ -20273,9 +20399,8 @@ const App = () => {
           setProfile(data);
           const musicOn = data?.settings?.sound_music ?? true;
           const sfxOn = data?.settings?.sound_sfx ?? true;
-          window._musicEnabled = musicOn;
+          window.toggleMusic(musicOn);
           window._sfxEnabled = sfxOn;
-          if (musicOn) window.startBgMusic(); else window.stopBgMusic();
           window.eaWarmAndroidSections?.();
           window.setLoadingProgress?.(90, 'Почти готово…');
           if (runtime?.maintenance_mode?.enabled && runtime?.is_admin) {
@@ -20486,6 +20611,21 @@ const App = () => {
         onDismissBadConnection={dismissBadConnection}
       />
 
+      {onboarding?.completed && newbiePathRemaining > 0 && !hasOverlay && (
+        <button
+          type="button"
+          className="newbie-path-floating"
+          data-newbie-path-floating="true"
+          data-haptic="medium"
+          aria-label={`Открыть Путь новичка: осталось задач ${newbiePathRemaining}`}
+          title={`Путь новичка · ${newbiePathRemaining}`}
+          onClick={()=>{setShowNewbiePath(true);window.__analytics?.onboarding('newbie_path_opened', false, null, {source:'floating_button'});}}
+        >
+          <img src={MIDORIA_COACH_ASSET} alt="" aria-hidden="true" style={{width:24,height:24,objectFit:'contain',filter:'drop-shadow(0 2px 4px rgba(0,0,0,0.35))'}}/>
+          <span className="newbie-path-floating__label">Путь новичка · {newbiePathRemaining}</span>
+        </button>
+      )}
+
       {/* Main content */}
       <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',minHeight:0}}
         onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
@@ -20541,13 +20681,6 @@ const App = () => {
       {showFriends && <FriendsScreen onClose={()=>{setShowFriends(false);setTimeout(async()=>{try{const r=await fetch(_buildAuthUrl('/api/friends/requests'), {cache:'no-store'});const d=await r.json();setFrPendingCount((d.incoming||[]).length);}catch(e){}},300);}} profile={profile} runtimeStatus={runtimeStatus} onRequestsChanged={setFrPendingCount}/>}
       {showProfile && <ProfileScreen profile={profile} onClose={()=>setShowProfile(false)}/>}
       {showExtraID && <ExtraIDSheet onClose={()=>setShowExtraID(false)} view={extraIDView} onSetView={setExtraIDView} extraIDData={extraIDData} onExtraIDData={setExtraIDData} profile={profile} initialActionToken={extraIDActionToken} onActionTokenConsumed={()=>setExtraIDActionToken('')} onReloadProfile={async()=>{const p=await loadProfile(resolveExtraIDAuthData());if(p)setProfile(p);}} />}
-
-      {onboarding?.completed && newbiePathRemaining > 0 && !newbiePathOpen && (
-        <button type="button" onClick={()=>{setShowNewbiePath(true);window.__analytics?.onboarding('newbie_path_opened', false, null, {source:'floating_button'});}} style={{position:'fixed',right:'calc(14px + var(--ea-safe-right))',bottom:'calc(78px + var(--ea-safe-bottom-soft))',zIndex:120,minHeight:42,borderRadius:12,border:'1px solid rgba(255,255,255,0.28)',background:`linear-gradient(160deg,#ffc870 0%,${T.orange} 42%,${T.orangeD} 100%)`,color:'#201005',padding:'0 13px',fontSize:12,fontWeight:1000,fontFamily:"'Exo 2',sans-serif",boxShadow:`0 12px 28px rgba(0,0,0,0.34), 0 0 18px ${T.orange}55, inset 0 1px 0 rgba(255,255,255,0.4)`,cursor:'pointer',display:'inline-flex',alignItems:'center',gap:7,animation:'onbClaimablePulse 2.4s ease-in-out infinite'}}>
-          <img src={MIDORIA_COACH_ASSET} alt="" aria-hidden="true" style={{width:24,height:24,objectFit:'contain',filter:'drop-shadow(0 2px 4px rgba(0,0,0,0.35))'}}/>
-          Путь новичка · {newbiePathRemaining}
-        </button>
-      )}
 
       <OnboardingGate onboarding={onboarding} onStart={startOnboardingBattle} onLogin={openExistingAccountLogin} starting={onboardingStarting}/>
       <MenuTourOverlay onboarding={onboarding} onAdvance={advanceMenuTour} onNavigate={navigateOnboardingTour} busy={onboardingTourSaving}/>
@@ -21706,6 +21839,9 @@ const renderExtraArenaApp = () => {
   const root = document.getElementById('root');
   try {
     if (window.ExtraArenaPlatform?.isMax?.()) {
+      // Clear foreign URL/ExtraID credentials synchronously even when the
+      // MAX session exchange rejects before React has a chance to mount.
+      persistAppAuthFromUrl();
       await window.ExtraArenaPlatform.ensureAuthSession();
     }
   } catch (error) {
@@ -21719,6 +21855,6 @@ const renderExtraArenaApp = () => {
   renderExtraArenaApp();
 })();
 </script>
-<script src="index.compiled.js?v=62d0b7391aa7"></script>
+<script src="index.compiled.js?v=74f3c241661e"></script>
 </body>
 </html>

@@ -205,6 +205,13 @@ class PveSurrenderEngine(EndTurnEngine):
             is_bot=True,
             replacement_status=ReplacementStatus.ACTIVE,
         )
+        self._arena = SimpleNamespace(
+            state=SimpleNamespace(
+                p1=self.p1_state,
+                p2=self.p2_state,
+                status=SimpleNamespace(value="active"),
+            )
+        )
         self.is_bot_match = True
         self.game_mode = "classic"
         self._trophy_changes = {}
@@ -221,20 +228,25 @@ class PveSurrenderEngine(EndTurnEngine):
 
 
 class SurrenderDB:
-    def __init__(self):
+    def __init__(self, initial_trophies=100):
+        self.initial_trophies = int(initial_trophies)
         self.trophy_updates = 0
 
     async def get_user_info(self, user_id):
-        return {"trophies": 100, "league": 1}
+        return {"trophies": self.initial_trophies, "league": 1}
 
     async def update_user_trophies(self, user_id, delta):
         self.trophy_updates += 1
-        return {"trophies": 100 + int(delta), "max_trophies": 100, "league": 1}
+        return {
+            "trophies": self.initial_trophies + int(delta),
+            "max_trophies": self.initial_trophies,
+            "league": 1,
+        }
 
 
 class IdempotentSurrenderDB(SurrenderDB):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, initial_trophies=100):
+        super().__init__(initial_trophies=initial_trophies)
         self.claimed = set()
         self.apply_calls = 0
         self._lock = asyncio.Lock()
@@ -248,7 +260,7 @@ class IdempotentSurrenderDB(SurrenderDB):
                     "applied": False,
                     "already_processed": True,
                     "trophy_penalty": 0,
-                    "new_trophies": 100 + (self.trophy_updates * int(penalty_delta)),
+                    "new_trophies": self.initial_trophies + (self.trophy_updates * int(penalty_delta)),
                 }
             await asyncio.sleep(0)
             self.claimed.add(key)
@@ -257,8 +269,67 @@ class IdempotentSurrenderDB(SurrenderDB):
                 "applied": True,
                 "already_processed": False,
                 "trophy_penalty": int(penalty_delta),
-                "new_trophies": 100 + int(penalty_delta),
+                "new_trophies": self.initial_trophies + int(penalty_delta),
             }
+
+
+class PveSurrenderDB(IdempotentSurrenderDB):
+    def __init__(self):
+        super().__init__(initial_trophies=1175)
+        self.battle_end_calls = 0
+        self.battle_end_payloads = []
+
+    async def apply_battle_end_rewards_transaction(self, **payload):
+        self.battle_end_calls += 1
+        self.battle_end_payloads.append(payload)
+        return {
+            "applied": True,
+            "reason": "applied",
+            "trophy_changes": {},
+            "trophy_totals": {},
+            "coins_changes": {},
+            "coins_totals": {},
+            "stars_changes": {},
+            "stars_totals": {},
+            "keys_changes": {},
+            "keys_totals": {},
+            "league_up": {},
+        }
+
+
+def test_dev_socket_user_id_is_loopback_and_development_only(monkeypatch):
+    class SocketPeer:
+        @staticmethod
+        def get_environ(_sid):
+            return {"aiohttp.request": SimpleNamespace(remote="127.0.0.1")}
+
+    monkeypatch.setattr(web_server, "sio", SocketPeer())
+    monkeypatch.setattr(
+        web_server,
+        "get_settings",
+        lambda: SimpleNamespace(environment="development"),
+    )
+    assert web_server._dev_socket_user_id("sid-local", "920020") == 920020
+    assert web_server._dev_socket_user_id("sid-local", "-1") is None
+
+    monkeypatch.setattr(
+        web_server,
+        "sio",
+        SimpleNamespace(
+            get_environ=lambda _sid: {
+                "aiohttp.request": SimpleNamespace(remote="203.0.113.10")
+            }
+        ),
+    )
+    assert web_server._dev_socket_user_id("sid-remote", "920020") is None
+
+    monkeypatch.setattr(
+        web_server,
+        "get_settings",
+        lambda: SimpleNamespace(environment="production"),
+    )
+    monkeypatch.setattr(web_server, "sio", SocketPeer())
+    assert web_server._dev_socket_user_id("sid-prod", "920020") is None
 
 
 async def _battle_client(monkeypatch, engine, match_id="m-turn"):
@@ -1080,7 +1151,7 @@ async def test_surrender_retry_after_engine_cleanup_returns_finished_payload(mon
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_human_surrender_in_pve_match_terminates_and_stops_active_redirect(monkeypatch):
-    db = SurrenderDB()
+    db = PveSurrenderDB()
     engine = PveSurrenderEngine()
     client = await _battle_client(monkeypatch, engine, match_id="m-pve-surrender")
     client.server.app["db"] = db
@@ -1091,19 +1162,51 @@ async def test_human_surrender_in_pve_match_terminates_and_stops_active_redirect
             json={"user_id": 101, "client_action_id": "pve-surrender-1"},
         )
         body = await response.json()
+        retry_response = await client.post(
+            "/api/matches/m-pve-surrender/surrender",
+            json={"user_id": 101, "client_action_id": "pve-surrender-2"},
+        )
+        retry_body = await retry_response.json()
         active_response = await client.get("/api/battle/active?user_id=101")
         active_body = await active_response.json()
 
         assert response.status == 200
         assert body["success"] is True
         assert body["game_over"] is True
+        assert body["winner_id"] == -900000001
         assert body["reason"] == "human_surrendered_pve"
-        assert "m-pve-surrender" not in web_server.ACTIVE_MATCHES
-        assert "m-pve-surrender" not in client.server.app["active_matches"]
         assert "m-pve-surrender" in web_server.ENDED_MATCH_IDS
+        assert engine.is_ended is True
+        assert engine.battle_end_processed is True
+        assert engine.rewards_granted is True
         assert active_response.status == 200
         assert active_body == {"active": False}
+        assert retry_response.status == 200
+        assert retry_body["already_ended"] is True
         assert db.trophy_updates == 1
+        assert db.apply_calls == 1
+        assert db.battle_end_calls == 1
+
+        finalization = db.battle_end_payloads[0]
+        assert finalization["winner_user_id"] == -900000001
+        assert finalization["loser_user_id"] == 101
+        assert finalization["surrender"] is True
+        assert body["trophy_penalty"] == -25
+        assert finalization["p1_trophy_change"] == -25
+        assert finalization["p2_trophy_change"] == 0
+        assert finalization["p1_coins_earned"] == 0
+        assert finalization["p2_coins_earned"] == 0
+        assert finalization["economy_events"] == []
+        assert all(
+            not any(
+                int(plan.get(resource, 0) or 0)
+                for resource in ("trophies", "coins", "stars", "wins_for_case")
+            )
+            for plan in finalization["rewards"].values()
+        )
+        assert finalization["daily_quest_ops"] == {
+            101: [("win_streak_5", 0, True)],
+        }
     finally:
         await client.close()
         web_server.ACTIVE_MATCHES.pop("m-pve-surrender", None)
@@ -1111,6 +1214,116 @@ async def test_human_surrender_in_pve_match_terminates_and_stops_active_redirect
         web_server.ACTION_RESULT_CACHE.clear()
         web_server.ENDED_MATCH_IDS.discard("m-pve-surrender")
         web_server.ENDED_MATCH_TIMES.pop("m-pve-surrender", None)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_socket_pve_surrender_emits_bot_winner_and_finalizes_once(monkeypatch):
+    match_id = "m-pve-surrender-socket"
+    sid = "sid-pve-surrender"
+    db = PveSurrenderDB()
+    engine = PveSurrenderEngine()
+    fake_sio = FakeSIO()
+    fake_sio.app = {
+        "db": db,
+        "active_matches": web_server.ACTIVE_MATCHES,
+        "match_game_modes": {match_id: "classic"},
+    }
+    monkeypatch.setattr(web_server, "sio", fake_sio)
+    web_server.ACTIVE_MATCHES[match_id] = engine
+    web_server.SID_TO_MATCH[sid] = {"match_id": match_id, "user_id": 101}
+
+    try:
+        await web_server.surrender(sid, {"client_action_id": "socket-surrender-1"})
+        await web_server.surrender(sid, {"client_action_id": "socket-surrender-2"})
+
+        acks = [
+            payload
+            for event, payload, kwargs in fake_sio.emits
+            if event == "surrender_ack" and kwargs.get("to") == sid
+        ]
+        ack = acks[0]
+        personal_game_over = next(
+            payload
+            for event, payload, kwargs in fake_sio.emits
+            if event == "game_over" and kwargs.get("to") == sid
+        )
+
+        assert ack["game_over"] is True
+        assert ack["winner_id"] == -900000001
+        assert ack["reason"] == "human_surrendered_pve"
+        assert personal_game_over["winner_id"] == -900000001
+        assert personal_game_over["reason"] == "human_surrendered_pve"
+        assert personal_game_over["players"]["101"]["trophy_delta"] == ack["trophy_penalty"]
+        assert personal_game_over["players"]["101"]["trophy_total"] == ack["new_trophies"]
+        assert len(acks) == 2
+        assert acks[1]["already_ended"] is True
+        assert acks[1]["already_processed"] is True
+        assert db.trophy_updates == 1
+        assert db.apply_calls == 1
+        assert db.battle_end_calls == 1
+        assert db.battle_end_payloads[0]["p1_trophy_change"] == -25
+        assert db.battle_end_payloads[0]["p2_trophy_change"] == 0
+        assert db.battle_end_payloads[0]["economy_events"] == []
+        assert all(
+            "trophies" not in plan
+            for plan in db.battle_end_payloads[0]["rewards"].values()
+        )
+        assert db.battle_end_payloads[0]["daily_quest_ops"] == {
+            101: [("win_streak_5", 0, True)],
+        }
+    finally:
+        web_server.ACTIVE_MATCHES.pop(match_id, None)
+        web_server.SID_TO_MATCH.pop(sid, None)
+        web_server.MATCH_LOCKS.pop(match_id, None)
+        web_server.ENDED_MATCH_IDS.discard(match_id)
+        web_server.ENDED_MATCH_TIMES.pop(match_id, None)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_pvp_finalization_records_prior_surrender_penalty_without_reapplying_it():
+    match_id = "m-pvp-surrender-summary"
+    db = PveSurrenderDB()
+    engine = PveSurrenderEngine()
+    engine.p2_state.user_id = 202
+    engine.p2_state.is_bot = False
+    engine.is_bot_match = False
+    engine.p1_state.replacement_status = ReplacementStatus.SURRENDERED
+    engine.p1_state.surrender_processed = True
+    engine._trophy_changes[101] = -25
+    engine._trophy_totals[101] = 1150
+    app = {
+        "db": db,
+        "active_matches": {},
+        "match_game_modes": {match_id: "classic"},
+    }
+
+    try:
+        assert await web_server._process_battle_end(app, match_id, engine, 202) is True
+        assert await web_server._process_battle_end(app, match_id, engine, 202) is True
+
+        assert db.trophy_updates == 0
+        assert db.apply_calls == 0
+        assert db.battle_end_calls == 1
+        finalization = db.battle_end_payloads[0]
+        assert finalization["winner_user_id"] == 202
+        assert finalization["loser_user_id"] == 101
+        assert finalization["p1_trophy_change"] == -25
+        assert "trophies" not in finalization["rewards"][101]
+        assert not any(
+            event.get("user_id") == 101 and event.get("resource") == "trophies"
+            for event in finalization["economy_events"]
+        )
+        assert finalization["daily_quest_ops"] == {
+            202: [
+                ("win_battle_1", 1, False),
+                ("win_battle_5", 1, False),
+                ("win_streak_5", 1, False),
+            ],
+            101: [("win_streak_5", 0, True)],
+        }
+    finally:
+        web_server.ENDED_MATCH_IDS.discard(match_id)
+        web_server.ENDED_MATCH_TIMES.pop(match_id, None)
 
 
 @pytest.mark.asyncio(loop_scope="function")

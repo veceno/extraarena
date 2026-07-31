@@ -49,7 +49,7 @@ NOTIFICATION_DEFAULTS = {
     "notif_extra_arena_modifiers": True,
     "notif_game_invites": True,
     "notif_friend_requests": True,
-    "notif_daily_rewards": True,
+    "notif_daily_rewards": False,
 }
 
 # These categories may be delayed or suppressed without losing a

@@ -21,6 +21,14 @@ final class RuStoreIntegrationFactory {
         }
 
         @Override
+        public void onResume() {
+        }
+
+        @Override
+        public void destroy() {
+        }
+
+        @Override
         public void checkOptionalUpdate(Runnable continueFlow) {
             if (continueFlow != null) {
                 continueFlow.run();

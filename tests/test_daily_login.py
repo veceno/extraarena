@@ -31,7 +31,7 @@ def test_notification_daily_login_reward_custom_payload_title_wins():
 
 def test_notification_daily_rewards_category_mapped_to_setting():
     assert NOTIFICATION_SETTING_BY_CATEGORY["daily_rewards"] == "notif_daily_rewards"
-    assert NOTIFICATION_DEFAULTS["notif_daily_rewards"] is True
+    assert NOTIFICATION_DEFAULTS["notif_daily_rewards"] is False
     assert notification_section("daily_rewards", {}) == "arena"
 
 

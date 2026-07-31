@@ -526,15 +526,47 @@ class GatewayMCPDB:
         if existing and existing.get("args_digest") != kwargs.get("args_digest"):
             return {"status": "conflict", "error": "idempotency_key_conflict"}
         if existing and existing.get("response") is not None:
-            return {"status": "replay", "response": existing["response"], "replayable": True, "reserved": False}
+            return {
+                "status": existing.get("status") or "replay",
+                "response": existing["response"],
+                "error": existing.get("error"),
+                "replayable": True,
+                "reserved": False,
+            }
         if existing:
             return {"status": "in_progress", "args_match": True, "reserved": False, "replayable": False}
-        self.idempotency[key] = {**kwargs, "response": None}
+        self.idempotency[key] = {**kwargs, "status": "in_progress", "response": None}
         return {"status": "in_progress", "reserved": True, "args_match": True, "replayable": False}
+
+    async def get_mcp_idempotency_key(self, **kwargs):
+        key = (kwargs.get("admin_user_id"), kwargs.get("tool_name"), kwargs.get("idempotency_key"))
+        existing = self.idempotency.get(key)
+        if existing is None:
+            return None
+        if existing.get("force_in_progress"):
+            return {**existing, "status": "in_progress"}
+        return dict(existing)
+
+    async def release_mcp_idempotency_key(self, **kwargs):
+        key = (kwargs.get("admin_user_id"), kwargs.get("tool_name"), kwargs.get("idempotency_key"))
+        existing = self.idempotency.get(key)
+        if (
+            existing
+            and existing.get("status") == "in_progress"
+            and existing.get("args_digest") == kwargs.get("args_digest")
+        ):
+            return self.idempotency.pop(key)
+        return None
 
     async def complete_mcp_idempotency_key(self, **kwargs):
         key = (kwargs.get("admin_user_id"), kwargs.get("tool_name"), kwargs.get("idempotency_key"))
-        self.idempotency.setdefault(key, {}).update({"response": kwargs.get("response")})
+        self.idempotency.setdefault(key, {}).update(
+            {
+                "status": kwargs.get("status"),
+                "response": kwargs.get("response"),
+                "error": kwargs.get("error"),
+            }
+        )
         return {"status": "stored"}
 
 
@@ -725,6 +757,70 @@ def test_mcp_mutating_capabilities_require_confirmation_and_idempotency():
         assert "confirmation_token" in properties
 
 
+def test_android_upload_schema_exposes_action_specific_contract_and_nonblank_reason():
+    from web.admin_capabilities import get_admin_capability
+
+    schema = get_admin_capability("admin.android.releases.upload").input_schema
+    variants = schema["oneOf"]
+    by_action = {
+        variant["properties"]["action"]["const"]: set(variant["required"])
+        for variant in variants
+    }
+
+    assert by_action["prepare"] >= {
+        "channel",
+        "artifact_kind",
+        "filename",
+        "size_bytes",
+        "sha256",
+        "version_code",
+        "version_name",
+    }
+    assert by_action["finalize"] == {"action", "upload_id"}
+    assert by_action["abort"] == {"action", "upload_id"}
+    assert schema["properties"]["reason"]["minLength"] == 1
+    assert schema["properties"]["reason"]["pattern"] == r"\S"
+
+
+@pytest.mark.asyncio
+async def test_android_upload_gateway_rejects_missing_action_fields_and_blank_reason(monkeypatch):
+    client, _db, admin_auth_token = await _gateway_client(monkeypatch)
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        missing_fields = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.android.releases.upload",
+                "arguments": {
+                    "action": "prepare",
+                    "dry_run": True,
+                    "reason": "stage build",
+                },
+            },
+        )
+        blank_reason = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.android.releases.upload",
+                "arguments": {
+                    "action": "finalize",
+                    "upload_id": "upload-1",
+                    "dry_run": True,
+                    "reason": "   ",
+                },
+            },
+        )
+
+        assert (await missing_fields.json())["error"]["message"] == "arguments_one_of_mismatch"
+        assert (await blank_reason.json())["error"]["message"] == "arguments.reason_pattern_mismatch"
+    finally:
+        await client.close()
+
+
 def test_admin_shop_schemas_expose_gift_sets_and_cosmetic_rewards():
     from web.admin_capabilities import ADMIN_CAPABILITIES
     from web.commerce_admin_mcp_specs import COMMERCE_ADMIN_CAPABILITY_SPECS
@@ -810,6 +906,101 @@ def test_mcp_admin_full_extraadmin_coverage_is_registered():
         if capability.adapter_function not in ADAPTERS
     ]
     assert missing_adapters == []
+
+
+@pytest.mark.asyncio
+async def test_android_upload_prepare_never_leaks_upload_token_through_mcp(monkeypatch):
+    class FakeAndroidReleaseService:
+        class Config:
+            chunk_bytes = 8 * 1024 * 1024
+
+        config = Config()
+
+        def __init__(self):
+            self.appended = b""
+
+        async def prepare_upload(self, **kwargs):
+            return {
+                "dry_run": bool(kwargs.get("dry_run")),
+                "upload": {"upload_id": "upload-1", "received_bytes": 0},
+                "upload_url": "/api/admin/android-releases/uploads/upload-1",
+                "chunk_bytes": 8 * 1024 * 1024,
+                "upload_token": "scoped-upload-secret-must-never-enter-mcp",
+            }
+
+        async def append_upload_chunk(self, **kwargs):
+            parts = []
+            async for chunk in kwargs["chunks"]:
+                parts.append(chunk)
+            self.appended = b"".join(parts)
+            assert kwargs["upload_token"] is None
+            return {"upload_id": kwargs["upload_id"], "received_bytes": len(self.appended)}
+
+    client, db, admin_auth_token = await _gateway_client(monkeypatch)
+    release_service = FakeAndroidReleaseService()
+    client.server.app["android_release_service"] = release_service
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        semantic = {
+            "action": "prepare",
+            "channel": "direct",
+            "artifact_kind": "apk",
+            "filename": "extraarena-49.apk",
+            "size_bytes": 1024,
+            "sha256": "a" * 64,
+            "version_code": 49,
+            "version_name": "0.5.2",
+            "reason": "stage signed direct build",
+        }
+        dry_response = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.android.releases.upload",
+                "arguments": {**semantic, "dry_run": True},
+            },
+        )
+        dry_payload = await dry_response.json()
+        confirmation_token = dry_payload["result"]["structuredContent"]["confirmation"]["confirmation_token"]
+        apply_response = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.android.releases.upload",
+                "arguments": {
+                    **semantic,
+                    "dry_run": False,
+                    "confirmation_token": confirmation_token,
+                    "idempotency_key": "android-upload-prepare-49",
+                },
+            },
+        )
+        apply_payload = await apply_response.json()
+        structured = apply_payload["result"]["structuredContent"]
+        stored_idempotency = db.idempotency[(101, "admin.android.releases.upload", "android-upload-prepare-49")]
+
+        assert apply_response.status == 200
+        assert "upload_token" not in structured
+        assert structured["upload_authentication"] == "Authorization: Bearer <current MCP token>"
+        assert "scoped-upload-secret" not in json.dumps(apply_payload)
+        assert "scoped-upload-secret" not in json.dumps(db.audit_calls)
+        assert "scoped-upload-secret" not in json.dumps(stored_idempotency, default=str)
+
+        chunk_response = await client.patch(
+            "/api/admin/android-releases/uploads/upload-1",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Upload-Offset": "0",
+                "Content-Type": "application/octet-stream",
+            },
+            data=b"apk-bytes",
+        )
+        assert chunk_response.status == 200
+        assert release_service.appended == b"apk-bytes"
+    finally:
+        await client.close()
 
 
 def _test_png_base64(width: int, height: int) -> str:
@@ -2165,6 +2356,164 @@ async def test_mcp_reward_track_create_and_patch_validate_specific_card_with_db(
 
 
 @pytest.mark.asyncio
+async def test_invalid_confirmation_never_reserves_idempotency_key_and_same_key_retries(monkeypatch):
+    client, db, admin_auth_token = await _gateway_client(monkeypatch)
+    patch = {"maintenance_mode": {"enabled": True}}
+    arguments = {
+        "patch": patch,
+        "dry_run": True,
+        "idempotency_key": "runtime-invalid-confirmation-retry",
+        "reason": "maintenance window",
+    }
+    key = (101, "admin.runtime.config.patch", arguments["idempotency_key"])
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        dry_run = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {"name": "admin.runtime.config.patch", "arguments": arguments},
+        )
+        valid_confirmation = (await dry_run.json())["result"]["structuredContent"]["confirmation"]["confirmation_token"]
+
+        rejected = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.runtime.config.patch",
+                "arguments": {
+                    **arguments,
+                    "dry_run": False,
+                    "confirmation_token": "invalid-confirmation-token",
+                },
+            },
+        )
+
+        assert (await rejected.json())["error"]["message"] == "confirmation_invalid"
+        assert key not in db.idempotency
+
+        applied = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.runtime.config.patch",
+                "arguments": {
+                    **arguments,
+                    "dry_run": False,
+                    "confirmation_token": valid_confirmation,
+                },
+            },
+        )
+
+        assert (await applied.json())["result"]["structuredContent"]["dry_run"] is False
+        assert db.runtime_config_updates == [patch]
+        assert db.idempotency[key]["status"] == "success"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_android_business_input_error_releases_key_for_fresh_confirmation_retry(monkeypatch):
+    from infrastructure.android_releases import AndroidReleaseError
+
+    class RetryableAndroidReleaseService:
+        class Config:
+            chunk_bytes = 8 * 1024 * 1024
+
+        config = Config()
+
+        def __init__(self):
+            self.apply_calls = 0
+
+        async def prepare_upload(self, **kwargs):
+            if kwargs.get("dry_run"):
+                return {"dry_run": True, "publishable_kind": True}
+            self.apply_calls += 1
+            if self.apply_calls == 1:
+                raise AndroidReleaseError("android_release_version_exists", status=409)
+            return {
+                "dry_run": False,
+                "upload": {"upload_id": "retry-upload", "received_bytes": 0},
+                "upload_url": "/api/admin/android-releases/uploads/retry-upload",
+                "upload_token": "never-leak-this-ticket",
+            }
+
+    client, db, admin_auth_token = await _gateway_client(monkeypatch)
+    service = RetryableAndroidReleaseService()
+    client.server.app["android_release_service"] = service
+    semantic = {
+        "action": "prepare",
+        "channel": "direct",
+        "artifact_kind": "apk",
+        "filename": "extraarena-49.apk",
+        "size_bytes": 1024,
+        "sha256": "a" * 64,
+        "version_code": 49,
+        "version_name": "0.5.2",
+        "reason": "retry verifier business transition",
+        "idempotency_key": "android-business-retry-49",
+    }
+    key = (101, "admin.android.releases.upload", semantic["idempotency_key"])
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+
+        async def confirmation() -> str:
+            response = await _mcp_call(
+                client,
+                token,
+                "tools/call",
+                {
+                    "name": "admin.android.releases.upload",
+                    "arguments": {**semantic, "dry_run": True},
+                },
+            )
+            return (await response.json())["result"]["structuredContent"]["confirmation"]["confirmation_token"]
+
+        first_confirmation = await confirmation()
+        rejected = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.android.releases.upload",
+                "arguments": {
+                    **semantic,
+                    "dry_run": False,
+                    "confirmation_token": first_confirmation,
+                },
+            },
+        )
+
+        assert (await rejected.json())["error"]["message"] == "android_release_version_exists"
+        assert key not in db.idempotency
+
+        second_confirmation = await confirmation()
+        applied = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.android.releases.upload",
+                "arguments": {
+                    **semantic,
+                    "dry_run": False,
+                    "confirmation_token": second_confirmation,
+                },
+            },
+        )
+        structured = (await applied.json())["result"]["structuredContent"]
+
+        assert structured["upload"]["upload_id"] == "retry-upload"
+        assert "upload_token" not in structured
+        assert service.apply_calls == 2
+        assert db.idempotency[key]["status"] == "success"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_mcp_completed_idempotency_replays_before_reconsuming_confirmation(monkeypatch):
     client, db, admin_auth_token = await _gateway_client(monkeypatch)
     patch = {"maintenance_mode": {"enabled": True}}
@@ -2598,6 +2947,39 @@ async def test_mcp_idempotency_helpers_hash_keys_and_store_sanitized_responses()
     assert "raw-idempotency-key" not in all_params
     assert "raw-jti" not in all_params
     assert "raw-response-token" not in all_params
+
+
+@pytest.mark.asyncio
+async def test_mcp_idempotency_release_deletes_only_matching_in_progress_digest():
+    db = FakeMCPDatabase()
+    db.fetchrow_results.append(
+        {
+            "key_hash": _scoped_idempotency_hash(42, "admin.ban_user", "retry-idempotency-key"),
+            "admin_user_id": 42,
+            "tool_name": "admin.ban_user",
+            "args_digest": "digest-1",
+            "status": "in_progress",
+        }
+    )
+
+    released = await db.release_mcp_idempotency_key(
+        idempotency_key="retry-idempotency-key",
+        admin_user_id=42,
+        tool_name="admin.ban_user",
+        args_digest="digest-1",
+    )
+
+    query, params = db.fetchrow_calls[-1]
+    assert "DELETE FROM mcp_idempotency_keys" in query
+    assert "status = 'in_progress'" in query
+    assert params == (
+        _scoped_idempotency_hash(42, "admin.ban_user", "retry-idempotency-key"),
+        42,
+        "admin.ban_user",
+        "digest-1",
+    )
+    assert released["status"] == "in_progress"
+    assert "retry-idempotency-key" not in _flatten_strings(params)
 
 
 @pytest.mark.asyncio

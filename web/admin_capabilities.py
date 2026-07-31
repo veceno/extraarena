@@ -268,8 +268,56 @@ def _mutating_controls() -> dict[str, JsonSchema]:
         "dry_run": _boolean_schema(),
         "idempotency_key": _string_schema(min_length=8, max_length=128),
         "confirmation_token": _string_schema(min_length=16, max_length=256),
-        "reason": _string_schema(max_length=500),
+        "reason": _string_schema(min_length=1, max_length=500, pattern=r"\S"),
     }
+
+
+def _android_release_upload_schema() -> JsonSchema:
+    schema = _object_schema(
+        {
+            "action": _string_schema(enum=("prepare", "finalize", "abort")),
+            "upload_id": _string_schema(min_length=1, max_length=80),
+            "channel": _string_schema(enum=("direct", "rustore")),
+            "artifact_kind": _string_schema(enum=("apk", "aab")),
+            "filename": _string_schema(min_length=1, max_length=200),
+            "size_bytes": _int_schema(minimum=1, maximum=1_073_741_824),
+            "sha256": _string_schema(min_length=64, max_length=64, pattern=r"^[0-9a-fA-F]{64}$"),
+            "version_code": _int_schema(minimum=1),
+            "version_name": _string_schema(min_length=1, max_length=80),
+            "release_notes": _string_schema(max_length=20_000),
+            **_mutating_controls(),
+        },
+        required=("action", "dry_run", "reason"),
+    )
+    # Keep the MCP descriptor honest: callers can discover the fields for each
+    # lifecycle transition instead of learning them from a runtime error.
+    schema["oneOf"] = [
+        {
+            "type": "object",
+            "properties": {"action": {"const": "prepare"}},
+            "required": [
+                "action",
+                "channel",
+                "artifact_kind",
+                "filename",
+                "size_bytes",
+                "sha256",
+                "version_code",
+                "version_name",
+            ],
+        },
+        {
+            "type": "object",
+            "properties": {"action": {"const": "finalize"}},
+            "required": ["action", "upload_id"],
+        },
+        {
+            "type": "object",
+            "properties": {"action": {"const": "abort"}},
+            "required": ["action", "upload_id"],
+        },
+    ]
+    return schema
 
 
 def _account_update_fields_schema() -> JsonSchema:
@@ -1684,6 +1732,102 @@ ADMIN_CAPABILITIES: tuple[AdminCapability, ...] = (
         dry_run_required=True,
         idempotency_required=True,
         adapter_function="adapter_upload_product_image",
+    ),
+    AdminCapability(
+        id="admin.android.releases.list",
+        title="List Android Releases",
+        description="List staged, published, superseded, and retired Android releases with verified artifact metadata and channel floors.",
+        input_schema=_object_schema(
+            {
+                "channel": _string_schema(enum=("direct", "rustore")),
+                "limit": _int_schema(minimum=1, maximum=200),
+                "offset": _int_schema(minimum=0, maximum=1_000_000),
+                "include_retired": _boolean_schema(default=True),
+            }
+        ),
+        required_scope="admin:android_releases:read",
+        read_only=True,
+        mutating=False,
+        safety_level="medium",
+        audit_policy="metadata",
+        dry_run_required=False,
+        idempotency_required=False,
+        adapter_function="adapter_list_android_releases",
+    ),
+    AdminCapability(
+        id="admin.android.releases.read",
+        title="Read Android Release",
+        description="Read one Android release, its artifact verification result, and effective latest/required channel floor.",
+        input_schema=_object_schema(
+            {"release_id": _string_schema(min_length=1, max_length=80)},
+            required=("release_id",),
+        ),
+        required_scope="admin:android_releases:read",
+        read_only=True,
+        mutating=False,
+        safety_level="medium",
+        audit_policy="metadata",
+        dry_run_required=False,
+        idempotency_required=False,
+        adapter_function="adapter_read_android_release",
+    ),
+    AdminCapability(
+        id="admin.android.releases.upload",
+        title="Manage Android Release Upload",
+        description="Prepare, finalize, or abort a resumable APK/AAB upload. APK/AAB bytes are streamed to the returned HTTP upload URL and are never embedded in MCP JSON.",
+        input_schema=_android_release_upload_schema(),
+        required_scope="admin:android_releases:write",
+        read_only=False,
+        mutating=True,
+        safety_level="high",
+        audit_policy="request_and_result",
+        dry_run_required=True,
+        idempotency_required=True,
+        adapter_function="adapter_manage_android_release_upload",
+    ),
+    AdminCapability(
+        id="admin.android.releases.publish",
+        title="Publish Android Release",
+        description="Publish a verified staged Android release and atomically advance latest version plus the monotonic required floor when mandatory. RuStore requires explicit confirmation that the exact version is already live in RuStore Console.",
+        input_schema=_object_schema(
+            {
+                "release_id": _string_schema(min_length=1, max_length=80),
+                "expected_version_code": _int_schema(minimum=1),
+                "required": _boolean_schema(default=False),
+                "store_release_confirmed": _boolean_schema(default=False),
+                **_mutating_controls(),
+            },
+            required=("release_id", "expected_version_code", "required", "store_release_confirmed", "dry_run", "reason"),
+        ),
+        required_scope="admin:android_releases:write",
+        read_only=False,
+        mutating=True,
+        safety_level="critical",
+        audit_policy="request_and_result",
+        dry_run_required=True,
+        idempotency_required=True,
+        adapter_function="adapter_publish_android_release",
+    ),
+    AdminCapability(
+        id="admin.android.releases.retire",
+        title="Retire Android Release",
+        description="Soft-retire an Android release without lowering the required floor; retiring current requires a valid fallback at or above that floor.",
+        input_schema=_object_schema(
+            {
+                "release_id": _string_schema(min_length=1, max_length=80),
+                "expected_version_code": _int_schema(minimum=1),
+                **_mutating_controls(),
+            },
+            required=("release_id", "expected_version_code", "dry_run", "reason"),
+        ),
+        required_scope="admin:android_releases:write",
+        read_only=False,
+        mutating=True,
+        safety_level="critical",
+        audit_policy="request_and_result",
+        dry_run_required=True,
+        idempotency_required=True,
+        adapter_function="adapter_retire_android_release",
     ),
 )
 

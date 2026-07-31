@@ -233,9 +233,11 @@ def test_android_push_registration_sends_device_timezone():
 def test_android_push_notification_intents_are_hardened():
     service = MESSAGING_SERVICE.read_text(encoding="utf-8")
 
-    assert "sanitizeUpdateUrl" in service
-    assert "BuildConfig.UPDATE_CHANNEL_URL.equals(url)" in service
-    assert "BuildConfig.UPDATE_APK_URL.equals(url)" in service
+    assert "new Intent(this, MainActivity.class)" in service
+    assert 'intent.setAction("ru.extraarena.app.PUSH")' in service
+    assert 'intent.putExtra("type"' in service
+    assert 'intent.putExtra("release_id"' in service
+    assert "Intent.ACTION_VIEW" not in service
     assert "intent.setPackage(getPackageName())" in service
     assert "PendingIntent.getActivity(\n                this,\n                notificationId" in service
     assert "Math.floorMod(seed.hashCode(), 100000)" in service
@@ -520,15 +522,19 @@ def test_generator_screen_uses_safe_json_and_http_status_for_api_mutations():
     assert "apiUrl('/api/generator/upgrade')" in upgrade
 
 
-def test_android_app_packages_heavy_local_shell_assets():
+def test_android_app_packages_curated_current_shell_assets():
     build = APP_BUILD.read_text(encoding="utf-8")
 
     assert "syncExtraArenaShellAssets" in build
     assert "generated/extraArenaShellAssets" in build
     assert "ea_webapp" in build
     assert "DesignAssets" in build
-    assert "ea_vendor" in build
-    assert "assets.srcDir(extraArenaShellAssetsDir)" in build
+    assert 'from(file("src/main/assets"))' in build
+    assert 'exclude("Cards.zip")' in build
+    assert 'exclude("Cards copy/**")' in build
+    assert "verifyOptimizedExtraArenaAssets" in build
+    assert "verifyCompiledWebapp" in build
+    assert "assets.setSrcDirs(listOf(extraArenaShellAssetsDir))" in build
     assert "preBuild" in build
 
 
@@ -592,7 +598,9 @@ def test_android_webview_auth_prefers_native_session_after_apk_update():
     assert "const token = getNativeAuthToken() || getStoredExtraToken()" in source
     assert "sessionStorage.getItem(EXTRA_ID_TOKEN_SESSION_KEY)" in source
     assert "public String getAuthToken()" in native
-    assert 'webView.addJavascriptInterface(new AndroidBridge(), "ExtraArenaApp")' in native
+    assert 'webView.addJavascriptInterface(new AndroidBridge(next), "ExtraArenaApp")' in native
+    assert "removeJavascriptInterface(\"ExtraArenaApp\")" in native
+    assert "isActiveAuthContext()" in native
 
 
 def test_android_extraid_registration_reuses_active_identity_and_revokes_sessions():
@@ -1272,6 +1280,9 @@ def test_browser_user_id_auth_fallback_is_local_dev_only():
     assert "allowLocalDevUserIdAuth() && urlId ? parseInt(urlId) : null" in source
     assert "if (!canLaunchArenaBattleHere())" in start_battle_block
     assert start_battle_block.index("if (!canLaunchArenaBattleHere())") < start_battle_block.index("var body =")
+    assert "var pollAuth = resolveUiAuth(authData);" in start_battle_block
+    assert "buildUiAuthUrl('/api/match/status?id=' + encodeURIComponent(matchId), pollAuth)" in start_battle_block
+    assert "{type:'auth', value:authData, source:'match_poll'}" not in start_battle_block
     assert "if (!canLaunchArenaBattleHere())" in start_vs_bot_block
     assert "if (!canLaunchArenaBattleHere())" in prebattle_block
     assert "if (!canLaunchArenaBattleHere())" in friendly_battle_block

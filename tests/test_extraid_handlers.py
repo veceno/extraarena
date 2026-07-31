@@ -1,5 +1,9 @@
+import asyncio
+import base64
 import json
 import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -669,6 +673,7 @@ async def test_register_keeps_pending_account_and_queues_ambiguous_email_failure
     assert response.status == 200
     assert body["ok"] is True
     assert body["email_sent"] is False
+    assert body["email_queued"] is True
     assert extra_db.enqueued_email_action == (
         "pending@example.com",
         "verify_email",
@@ -714,6 +719,7 @@ class LoginExtraIDDB:
     def __init__(self):
         self.account_id = uuid.uuid4()
         self.inserted_session_id = None
+        self.created_email_sessions = []
 
     async def get_extra_account_by_email(self, email):
         return {
@@ -737,6 +743,11 @@ class LoginExtraIDDB:
         if "INSERT INTO auth_sessions" in query:
             self.inserted_session_id = args[0]
         return "INSERT 0 1"
+
+    async def create_email_password_session(self, **kwargs):
+        self.inserted_session_id = kwargs["session_id"]
+        self.created_email_sessions.append(kwargs)
+        return {"session_id": kwargs["session_id"]}
 
 
 @pytest.mark.asyncio
@@ -2426,3 +2437,1069 @@ async def test_email_outbox_retry_budget_is_24_attempts(monkeypatch):
     assert EMAIL_OUTBOX_MAX_ATTEMPTS == 24
     assert calls[0][1][-1] == 24
     assert "LEAST(" in calls[0][0] and "3600" in calls[0][0]
+
+
+def _anonymous_bootstrap_value(fill: int) -> str:
+    return base64.urlsafe_b64encode(bytes([fill]) * 32).decode("ascii").rstrip("=")
+
+
+def test_anonymous_bootstrap_verifier_is_strict_and_survives_jwt_key_rotation(
+    monkeypatch,
+):
+    bootstrap_id = _anonymous_bootstrap_value(17)
+    bootstrap_secret = _anonymous_bootstrap_value(29)
+
+    monkeypatch.setenv("JWT_SECRET", "first-signing-key-that-is-long-enough-2026")
+    get_settings.cache_clear()
+    first = extraid_handlers._anonymous_bootstrap_secret_hash(
+        bootstrap_id,
+        bootstrap_secret,
+    )
+    monkeypatch.setenv("JWT_SECRET", "rotated-signing-key-that-is-long-enough-2026")
+    get_settings.cache_clear()
+    rotated = extraid_handlers._anonymous_bootstrap_secret_hash(
+        bootstrap_id,
+        bootstrap_secret,
+    )
+
+    assert first == rotated
+    assert len(first) == 64
+    assert bootstrap_secret not in first
+    assert extraid_handlers._decode_anonymous_bootstrap_value(bootstrap_id) == bytes(
+        [17]
+    ) * 32
+    assert extraid_handlers._decode_anonymous_bootstrap_value("short") is None
+    assert (
+        extraid_handlers._decode_anonymous_bootstrap_value(bootstrap_id + "=")
+        is None
+    )
+
+
+class BootstrapLifecycleDB(FakeExtraIDDB):
+    def __init__(self):
+        super().__init__()
+        self.bootstrap = None
+        self.bootstrap_sessions = []
+        self.claim_calls = []
+
+    async def get_anonymous_auth_bootstrap(self, bootstrap_id):
+        if self.bootstrap and self.bootstrap["bootstrap_id"] == bootstrap_id:
+            return dict(self.bootstrap)
+        return None
+
+    async def claim_anonymous_auth_bootstrap(
+        self,
+        *,
+        bootstrap_id,
+        secret_hash,
+        proposed_user_id,
+    ):
+        self.claim_calls.append((bootstrap_id, secret_hash, proposed_user_id))
+        if self.bootstrap is None:
+            self.bootstrap = {
+                "bootstrap_id": bootstrap_id,
+                "secret_hash": secret_hash,
+                "user_id": proposed_user_id,
+                "generation": 0,
+                "disabled_at": None,
+            }
+        return dict(self.bootstrap)
+
+    async def create_anonymous_bootstrap_session(self, **kwargs):
+        if self.bootstrap is None or kwargs["bootstrap_id"] != self.bootstrap["bootstrap_id"]:
+            return {"status": "invalid_bootstrap"}
+        if kwargs["secret_hash"] != self.bootstrap["secret_hash"]:
+            return {"status": "invalid_bootstrap"}
+        if self.bootstrap["disabled_at"] is not None:
+            return {"status": "bootstrap_upgraded"}
+        for session in self.bootstrap_sessions:
+            session["revoked"] = True
+        self.bootstrap["generation"] += 1
+        self.bootstrap_sessions.append(
+            {
+                "session_id": kwargs["session_id"],
+                "token_hash": kwargs["token_hash"],
+                "revoked": False,
+            }
+        )
+        return {
+            "status": "created",
+            "user_id": self.bootstrap["user_id"],
+            "generation": self.bootstrap["generation"],
+        }
+
+
+@pytest.mark.asyncio
+async def test_anonymous_bootstrap_retry_reuses_user_and_rotates_session():
+    game_db = FakeGameDB()
+    extra_db = BootstrapLifecycleDB()
+    payload = {
+        "nickname": "Arena12345678",
+        "device_label": "Pixel E2E",
+        "bootstrap_id": _anonymous_bootstrap_value(41),
+        "bootstrap_secret": _anonymous_bootstrap_value(43),
+    }
+    app = {"db": game_db, "extraid_db": extra_db}
+
+    first_response = await extraid_handlers.anonymous_auth_handler(
+        FakeRequest(payload, app=app)
+    )
+    second_response = await extraid_handlers.anonymous_auth_handler(
+        FakeRequest(payload, app=app)
+    )
+    first = json.loads(first_response.text)
+    second = json.loads(second_response.text)
+
+    assert first_response.status == second_response.status == 200
+    assert first["user_id"] == second["user_id"] == 9_100_000_000_123
+    assert first["bootstrap_generation"] == 1
+    assert second["bootstrap_generation"] == 2
+    assert first["token"] != second["token"]
+    assert len(game_db.ensured_users) == 1
+    assert len(extra_db.claim_calls) == 1
+    assert len(extra_db.bootstrap_sessions) == 2
+    assert extra_db.bootstrap_sessions[0]["revoked"] is True
+    assert extra_db.bootstrap_sessions[1]["revoked"] is False
+
+
+@pytest.mark.asyncio
+async def test_retained_registration_bootstrap_applies_later_anonymous_nickname():
+    game_db = FakeGameDB()
+    extra_db = BootstrapLifecycleDB()
+    bootstrap_id = _anonymous_bootstrap_value(111)
+    bootstrap_secret = _anonymous_bootstrap_value(113)
+    app = {"db": game_db, "extraid_db": extra_db}
+
+    await extraid_handlers.anonymous_auth_handler(
+        FakeRequest(
+            {
+                "nickname": "Arena12345678",
+                "bootstrap_id": bootstrap_id,
+                "bootstrap_secret": bootstrap_secret,
+            },
+            app=app,
+        )
+    )
+    recovered = await extraid_handlers.anonymous_auth_handler(
+        FakeRequest(
+            {
+                "nickname": "ChosenHero",
+                "bootstrap_id": bootstrap_id,
+                "bootstrap_secret": bootstrap_secret,
+            },
+            app=app,
+        )
+    )
+
+    body = json.loads(recovered.text)
+    nickname_updates = [
+        args
+        for query, args in game_db.executed
+        if "UPDATE users SET first_name = $1" in query
+    ]
+    assert recovered.status == 200
+    assert body["user_id"] == 9_100_000_000_123
+    assert body["nickname"] == "ChosenHero"
+    assert nickname_updates[-1] == ("ChosenHero", 9_100_000_000_123)
+    assert len(game_db.ensured_users) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_extraid_upgrade_rejects_bootstrap_before_nickname_mutation():
+    class ConcurrentUpgradeDB(BootstrapLifecycleDB):
+        async def create_anonymous_bootstrap_session(self, **kwargs):
+            # Model registration committing the bootstrap disable after the
+            # handler's optimistic read but before its transactional rotation.
+            self.bootstrap["disabled_at"] = datetime.now(timezone.utc)
+            return await super().create_anonymous_bootstrap_session(**kwargs)
+
+    game_db = FakeGameDB()
+    extra_db = ConcurrentUpgradeDB()
+    bootstrap_id = _anonymous_bootstrap_value(117)
+    bootstrap_secret = _anonymous_bootstrap_value(119)
+    extra_db.bootstrap = {
+        "bootstrap_id": bootstrap_id,
+        "secret_hash": extraid_handlers._anonymous_bootstrap_secret_hash(
+            bootstrap_id,
+            bootstrap_secret,
+        ),
+        "user_id": 9_100_000_000_123,
+        "generation": 1,
+        "disabled_at": None,
+    }
+
+    response = await extraid_handlers.anonymous_auth_handler(
+        FakeRequest(
+            {
+                "nickname": "StaleRename",
+                "bootstrap_id": bootstrap_id,
+                "bootstrap_secret": bootstrap_secret,
+            },
+            app={"db": game_db, "extraid_db": extra_db},
+        )
+    )
+
+    assert response.status == 409
+    assert json.loads(response.text)["error"] == "bootstrap_upgraded"
+    assert not any(
+        "UPDATE users SET first_name = $1" in query
+        for query, _args in game_db.executed
+    )
+    assert extra_db.bootstrap_sessions == []
+
+
+@pytest.mark.asyncio
+async def test_anonymous_bootstrap_concurrent_claim_loser_deletes_empty_user():
+    class LostClaimDB(BootstrapLifecycleDB):
+        WINNER_USER_ID = 9_100_000_000_999
+
+        async def get_anonymous_auth_bootstrap(self, _bootstrap_id):
+            return None
+
+        async def claim_anonymous_auth_bootstrap(self, **kwargs):
+            self.bootstrap = {
+                "bootstrap_id": kwargs["bootstrap_id"],
+                "secret_hash": kwargs["secret_hash"],
+                "user_id": self.WINNER_USER_ID,
+                "generation": 0,
+                "disabled_at": None,
+            }
+            return dict(self.bootstrap)
+
+    game_db = FakeGameDB()
+    extra_db = LostClaimDB()
+    response = await extraid_handlers.anonymous_auth_handler(
+        FakeRequest(
+            {
+                "nickname": "Arena87654321",
+                "bootstrap_id": _anonymous_bootstrap_value(47),
+                "bootstrap_secret": _anonymous_bootstrap_value(53),
+            },
+            app={"db": game_db, "extraid_db": extra_db},
+        )
+    )
+
+    assert response.status == 200
+    assert json.loads(response.text)["user_id"] == LostClaimDB.WINNER_USER_ID
+    assert game_db.deleted_users == [9_100_000_000_123]
+
+
+@pytest.mark.asyncio
+async def test_anonymous_bootstrap_wrong_secret_has_no_side_effects():
+    extra_db = BootstrapLifecycleDB()
+    bootstrap_id = _anonymous_bootstrap_value(59)
+    correct_secret = _anonymous_bootstrap_value(61)
+    extra_db.bootstrap = {
+        "bootstrap_id": bootstrap_id,
+        "secret_hash": extraid_handlers._anonymous_bootstrap_secret_hash(
+            bootstrap_id,
+            correct_secret,
+        ),
+        "user_id": 9_100_000_000_123,
+        "generation": 4,
+        "disabled_at": None,
+    }
+    game_db = FakeGameDB()
+
+    response = await extraid_handlers.anonymous_auth_handler(
+        FakeRequest(
+            {
+                "nickname": "Arena11112222",
+                "bootstrap_id": bootstrap_id,
+                "bootstrap_secret": _anonymous_bootstrap_value(67),
+            },
+            app={"db": game_db, "extraid_db": extra_db},
+        )
+    )
+
+    assert response.status == 401
+    assert json.loads(response.text)["error"] == "invalid_bootstrap"
+    assert game_db.ensured_users == []
+    assert game_db.executed == []
+    assert extra_db.bootstrap_sessions == []
+
+
+@pytest.mark.asyncio
+async def test_anonymous_bootstrap_upgraded_is_terminal_and_creates_no_session():
+    extra_db = BootstrapLifecycleDB()
+    bootstrap_id = _anonymous_bootstrap_value(79)
+    bootstrap_secret = _anonymous_bootstrap_value(83)
+    extra_db.bootstrap = {
+        "bootstrap_id": bootstrap_id,
+        "secret_hash": extraid_handlers._anonymous_bootstrap_secret_hash(
+            bootstrap_id,
+            bootstrap_secret,
+        ),
+        "user_id": 9_100_000_000_123,
+        "generation": 2,
+        "disabled_at": "already-upgraded",
+    }
+    game_db = FakeGameDB()
+
+    response = await extraid_handlers.anonymous_auth_handler(
+        FakeRequest(
+            {
+                "nickname": "Arena55556666",
+                "bootstrap_id": bootstrap_id,
+                "bootstrap_secret": bootstrap_secret,
+            },
+            app={"db": game_db, "extraid_db": extra_db},
+        )
+    )
+
+    assert response.status == 409
+    assert json.loads(response.text) == {"error": "bootstrap_upgraded"}
+    assert game_db.ensured_users == []
+    assert extra_db.bootstrap_sessions == []
+
+
+@pytest.mark.asyncio
+async def test_anonymous_bootstrap_claim_failure_compensates_primary_user():
+    class FailingClaimDB(BootstrapLifecycleDB):
+        async def claim_anonymous_auth_bootstrap(self, **_kwargs):
+            raise RuntimeError("bootstrap_db_unavailable")
+
+    game_db = FakeGameDB()
+    response = await extraid_handlers.anonymous_auth_handler(
+        FakeRequest(
+            {
+                "nickname": "Arena33334444",
+                "bootstrap_id": _anonymous_bootstrap_value(71),
+                "bootstrap_secret": _anonymous_bootstrap_value(73),
+            },
+            app={"db": game_db, "extraid_db": FailingClaimDB()},
+        )
+    )
+
+    assert response.status == 500
+    assert game_db.deleted_users == [9_100_000_000_123]
+
+
+@pytest.mark.asyncio
+async def test_anonymous_bootstrap_ambiguous_claim_readback_preserves_committed_user():
+    class CommittedThenFailedClaimDB(BootstrapLifecycleDB):
+        async def claim_anonymous_auth_bootstrap(self, **kwargs):
+            self.bootstrap = {
+                "bootstrap_id": kwargs["bootstrap_id"],
+                "secret_hash": kwargs["secret_hash"],
+                "user_id": kwargs["proposed_user_id"],
+                "generation": 0,
+                "disabled_at": None,
+            }
+            raise RuntimeError("connection_lost_after_commit")
+
+    game_db = FakeGameDB()
+    extra_db = CommittedThenFailedClaimDB()
+    response = await extraid_handlers.anonymous_auth_handler(
+        FakeRequest(
+            {
+                "nickname": "Arena77778888",
+                "bootstrap_id": _anonymous_bootstrap_value(89),
+                "bootstrap_secret": _anonymous_bootstrap_value(97),
+            },
+            app={"db": game_db, "extraid_db": extra_db},
+        )
+    )
+
+    assert response.status == 200
+    assert json.loads(response.text)["bootstrap_generation"] == 1
+    assert game_db.deleted_users == []
+    assert extra_db.bootstrap["user_id"] == 9_100_000_000_123
+
+
+@pytest.mark.asyncio
+async def test_anonymous_bootstrap_unknown_readback_never_deletes_primary_user():
+    class UnknownClaimStateDB(BootstrapLifecycleDB):
+        def __init__(self):
+            super().__init__()
+            self.reads = 0
+
+        async def get_anonymous_auth_bootstrap(self, bootstrap_id):
+            self.reads += 1
+            if self.reads == 1:
+                return None
+            raise RuntimeError("readback_unavailable")
+
+        async def claim_anonymous_auth_bootstrap(self, **_kwargs):
+            raise RuntimeError("claim_result_ambiguous")
+
+    game_db = FakeGameDB()
+    response = await extraid_handlers.anonymous_auth_handler(
+        FakeRequest(
+            {
+                "nickname": "ArenaReadback",
+                "bootstrap_id": _anonymous_bootstrap_value(107),
+                "bootstrap_secret": _anonymous_bootstrap_value(109),
+            },
+            app={"db": game_db, "extraid_db": UnknownClaimStateDB()},
+        )
+    )
+
+    assert response.status == 500
+    assert game_db.deleted_users == []
+
+
+@pytest.mark.asyncio
+async def test_anonymous_bootstrap_cancel_after_commit_preserves_mapping_and_user():
+    class CancelledAfterCommitDB(BootstrapLifecycleDB):
+        def __init__(self):
+            super().__init__()
+            self.claim_started = asyncio.Event()
+
+        async def claim_anonymous_auth_bootstrap(self, **kwargs):
+            self.claim_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                # Model COMMIT completing while cancellation races with the
+                # driver's response/readback boundary.
+                self.bootstrap = {
+                    "bootstrap_id": kwargs["bootstrap_id"],
+                    "secret_hash": kwargs["secret_hash"],
+                    "user_id": kwargs["proposed_user_id"],
+                    "generation": 0,
+                    "disabled_at": None,
+                }
+                raise
+
+    game_db = FakeGameDB()
+    extra_db = CancelledAfterCommitDB()
+
+    request_task = asyncio.create_task(
+        extraid_handlers.anonymous_auth_handler(
+            FakeRequest(
+                {
+                    "nickname": "Arena99990000",
+                    "bootstrap_id": _anonymous_bootstrap_value(101),
+                    "bootstrap_secret": _anonymous_bootstrap_value(103),
+                },
+                app={"db": game_db, "extraid_db": extra_db},
+            )
+        )
+    )
+    await asyncio.wait_for(extra_db.claim_started.wait(), timeout=1)
+    request_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await request_task
+
+    assert game_db.deleted_users == []
+    assert extra_db.bootstrap["user_id"] == 9_100_000_000_123
+    assert extra_db.bootstrap_sessions == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_anonymous_session_failure_deletes_primary_user():
+    class FailedLegacySessionDB(FakeExtraIDDB):
+        async def execute(self, query, *args):
+            if "INSERT INTO auth_sessions" in query:
+                raise RuntimeError("session_insert_failed")
+            return await super().execute(query, *args)
+
+        async def fetchrow(self, query, *args):
+            if "FROM auth_sessions" in query:
+                return None
+            return await super().fetchrow(query, *args)
+
+    game_db = FakeGameDB()
+    response = await extraid_handlers.anonymous_auth_handler(
+        FakeRequest(
+            {"nickname": "LegacyHero"},
+            app={"db": game_db, "extraid_db": FailedLegacySessionDB()},
+        )
+    )
+
+    assert response.status == 500
+    assert game_db.deleted_users == [9_100_000_000_123]
+
+
+@pytest.mark.asyncio
+async def test_legacy_anonymous_cancelled_insert_finishes_shielded_cleanup():
+    class CancelledLegacySessionDB(FakeExtraIDDB):
+        def __init__(self):
+            super().__init__()
+            self.insert_started = asyncio.Event()
+
+        async def execute(self, query, *args):
+            if "INSERT INTO auth_sessions" in query:
+                self.insert_started.set()
+                await asyncio.Event().wait()
+            return await super().execute(query, *args)
+
+        async def fetchrow(self, query, *args):
+            if "FROM auth_sessions" in query:
+                await asyncio.sleep(0)
+                return None
+            return await super().fetchrow(query, *args)
+
+    class YieldingCleanupGameDB(FakeGameDB):
+        async def delete_user(self, user_id):
+            await asyncio.sleep(0)
+            return await super().delete_user(user_id)
+
+    game_db = YieldingCleanupGameDB()
+    extra_db = CancelledLegacySessionDB()
+    request_task = asyncio.create_task(
+        extraid_handlers.anonymous_auth_handler(
+            FakeRequest(
+                {"nickname": "LegacyCancel"},
+                app={"db": game_db, "extraid_db": extra_db},
+            )
+        )
+    )
+    await asyncio.wait_for(extra_db.insert_started.wait(), timeout=1)
+    request_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await request_task
+
+    assert game_db.deleted_users == [9_100_000_000_123]
+
+
+@pytest.mark.asyncio
+async def test_legacy_anonymous_ambiguous_insert_readback_preserves_user():
+    class CommittedLegacySessionDB(FakeExtraIDDB):
+        def __init__(self):
+            super().__init__()
+            self.committed_session = None
+
+        async def execute(self, query, *args):
+            if "INSERT INTO auth_sessions" in query:
+                self.committed_session = {
+                    "session_id": args[0],
+                    "user_id": args[1],
+                    "auth_method": args[2],
+                }
+                raise RuntimeError("connection_lost_after_commit")
+            return await super().execute(query, *args)
+
+        async def fetchrow(self, query, *args):
+            if "FROM auth_sessions" in query:
+                return dict(self.committed_session) if self.committed_session else None
+            return await super().fetchrow(query, *args)
+
+    game_db = FakeGameDB()
+    response = await extraid_handlers.anonymous_auth_handler(
+        FakeRequest(
+            {"nickname": "LegacyReadback"},
+            app={"db": game_db, "extraid_db": CommittedLegacySessionDB()},
+        )
+    )
+
+    assert response.status == 200
+    assert json.loads(response.text)["anonymous"] is True
+    assert game_db.deleted_users == []
+
+
+@pytest.mark.asyncio
+async def test_pending_mobile_registration_retry_is_idempotent(monkeypatch):
+    class PendingRetryDB(FakeExtraIDDB):
+        def __init__(self):
+            super().__init__()
+            self.queued = []
+
+        async def get_any_extra_account_by_user_id(self, user_id):
+            assert user_id == 5252
+            return {
+                "id": self.account_id,
+                "user_id": 5252,
+                "display_id": "5252-PND",
+                "email": "player@example.com",
+                "password_hash": "stored-hash",
+                "is_email_verified": False,
+                "email_verification_required": True,
+                "deleted_at": None,
+            }
+
+        async def enqueue_account_email_action(self, email, purpose):
+            self.queued.append((email, purpose))
+
+    game_db = FakeGameDB()
+    extra_db = PendingRetryDB()
+    request = FakeRequest(
+        {
+            "email": "Player@Example.com",
+            "password": "strongpass",
+            "nickname": "PendingHero",
+            "client": "android_app",
+        },
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+        headers={"Authorization": "Bearer anonymous-jwt"},
+    )
+
+    async def verify_jwt(*_args):
+        return 5252, uuid.uuid4()
+
+    monkeypatch.setattr(extraid_handlers, "_verify_jwt_token_async_fn", verify_jwt)
+    monkeypatch.setattr(extraid_handlers, "_nickname_valid_fn", lambda _value: True)
+    monkeypatch.setattr(extraid_handlers.bcrypt, "checkpw", lambda raw, stored: True)
+
+    response = await extraid_handlers.extraid_register_handler(request)
+    body = json.loads(response.text)
+
+    assert response.status == 200
+    assert body["ok"] is True
+    assert body["idempotent_replay"] is True
+    assert body["display_id"] == "5252-PND"
+    assert body["email_queued"] is True
+    assert extra_db.queued == [("player@example.com", "verify_email")]
+    assert game_db.ensured_users == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("verified", "password_matches", "email"),
+    (
+        (True, True, "player@example.com"),
+        (False, False, "player@example.com"),
+        (False, True, "other@example.com"),
+    ),
+)
+async def test_pending_mobile_registration_retry_rejects_mismatch(
+    monkeypatch,
+    verified,
+    password_matches,
+    email,
+):
+    class ExistingDB(FakeExtraIDDB):
+        async def get_any_extra_account_by_user_id(self, _user_id):
+            return {
+                "id": self.account_id,
+                "user_id": 5252,
+                "display_id": "5252-OLD",
+                "email": "player@example.com",
+                "password_hash": "stored-hash",
+                "is_email_verified": verified,
+                "email_verification_required": True,
+                "deleted_at": None,
+            }
+
+    async def verify_jwt(*_args):
+        return 5252, uuid.uuid4()
+
+    monkeypatch.setattr(extraid_handlers, "_verify_jwt_token_async_fn", verify_jwt)
+    monkeypatch.setattr(extraid_handlers, "_nickname_valid_fn", lambda _value: True)
+    monkeypatch.setattr(
+        extraid_handlers.bcrypt,
+        "checkpw",
+        lambda raw, stored: password_matches,
+    )
+    response = await extraid_handlers.extraid_register_handler(
+        FakeRequest(
+            {
+                "email": email,
+                "password": "strongpass",
+                "nickname": "ExistingHero",
+                "client": "android_app",
+            },
+            app={
+                "db": FakeGameDB(),
+                "extraid_db": ExistingDB(),
+                "bot_token": "bot-token",
+            },
+            headers={"Authorization": "Bearer anonymous-jwt"},
+        )
+    )
+
+    assert response.status == 409
+    assert json.loads(response.text)["error"] == "extraid_already_exists"
+
+
+@pytest.mark.asyncio
+async def test_email_change_commits_new_address_and_outbox_without_provider_call(
+    monkeypatch,
+):
+    class EmailChangeDB(FakeExtraIDDB):
+        def __init__(self):
+            super().__init__()
+            self.changes = []
+
+        async def get_extra_account_by_user_id(self, user_id):
+            return {
+                "id": self.account_id,
+                "user_id": user_id,
+                "email": "old@example.com",
+                "is_email_verified": False,
+                "email_verification_required": True,
+            }
+
+        async def change_unverified_email_and_enqueue_verification(self, account_id, **kwargs):
+            self.changes.append((account_id, kwargs))
+            return "changed"
+
+    provider_calls = []
+
+    async def sender(**kwargs):
+        provider_calls.append(kwargs)
+        return False
+
+    async def verify_jwt(*_args):
+        return 777, uuid.uuid4()
+
+    monkeypatch.setattr(extraid_handlers, "_verify_jwt_token_async_fn", verify_jwt)
+    extra_db = EmailChangeDB()
+    response = await extraid_handlers.extraid_unverified_email_change_handler(
+        FakeRequest(
+            {"email": "New@Example.com"},
+            app={
+                "extraid_db": extra_db,
+                "extraid_email_sender": sender,
+                "bot_token": "bot-token",
+            },
+            headers={"Authorization": "Bearer game-jwt"},
+        )
+    )
+    body = json.loads(response.text)
+
+    assert response.status == 200
+    assert body == {
+        "ok": True,
+        "email_sent": False,
+        "email_queued": True,
+        "email_verification_required": True,
+    }
+    assert extra_db.changes == [
+        (
+            extra_db.account_id,
+            {
+                "new_email": "new@example.com",
+                "expected_old_email": "old@example.com",
+            },
+        )
+    ]
+    assert provider_calls == []
+
+
+@pytest.mark.asyncio
+async def test_stale_claimed_email_outbox_never_reaches_provider():
+    class StaleWorkerDB(FakeExtraIDDB):
+        def __init__(self):
+            super().__init__()
+            self.outbox_id = uuid.uuid4()
+            self.revoked = []
+            self.retried = []
+
+        async def claim_account_email_outbox(self, limit=20):
+            return [
+                {
+                    "outbox_id": self.outbox_id,
+                    "extra_account_id": self.account_id,
+                    "purpose": "verify_email",
+                    "email_snapshot": "old@example.com",
+                    "attempts": 1,
+                    "id": self.account_id,
+                    "user_id": 777,
+                    "email": "old@example.com",
+                    "is_email_verified": False,
+                    "email_verification_required": True,
+                    "deleted_at": None,
+                    "reg_bonus_claimed": False,
+                }
+            ]
+
+        async def revoke_account_action_token(self, token_id):
+            self.revoked.append(token_id)
+
+        async def retry_account_email_outbox(self, outbox_id, *, error):
+            self.retried.append((outbox_id, error))
+            return False
+
+        @asynccontextmanager
+        async def account_email_delivery_guard(self, **_kwargs):
+            yield False
+
+    sent = []
+
+    async def sender(**kwargs):
+        sent.append(kwargs)
+        return True
+
+    extra_db = StaleWorkerDB()
+    processed = await extraid_handlers._run_extraid_email_outbox_once(
+        {"extraid_db": extra_db, "extraid_email_sender": sender}
+    )
+
+    assert processed == 0
+    assert sent == []
+    assert len(extra_db.revoked) == 2
+    assert extra_db.retried == [
+        (extra_db.outbox_id, "delivery_or_token_issue_failed")
+    ]
+
+
+class _DatabaseTestContext:
+    def __init__(self, value):
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _DatabaseTestPool:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def acquire(self):
+        return _DatabaseTestContext(self.connection)
+
+
+class _DatabaseTestConnection:
+    def __init__(self, *, fail_session_insert=False):
+        self.fail_session_insert = fail_session_insert
+        self.executed = []
+        self.fetchrows = []
+        self.fetchvals = []
+
+    def transaction(self):
+        return _DatabaseTestContext(self)
+
+    async def execute(self, query, *args):
+        self.executed.append((query, args))
+        if self.fail_session_insert and "INSERT INTO auth_sessions" in query:
+            raise RuntimeError("session_insert_failed")
+        return "UPDATE 1"
+
+    async def fetchrow(self, query, *args):
+        self.fetchrows.append((query, args))
+        if "SELECT email, is_email_verified, deleted_at" in query:
+            return {
+                "email": "new@example.com",
+                "is_email_verified": False,
+                "deleted_at": None,
+            }
+        if "UPDATE extra_accounts" in query:
+            return {"id": args[1]}
+        return None
+
+    async def fetchval(self, query, *args):
+        self.fetchvals.append((query, args))
+        return None
+
+
+@pytest.mark.asyncio
+async def test_action_token_cooldown_ignores_consumed_and_other_email_snapshot():
+    from infrastructure.extraid_database import ExtraIDDatabase
+
+    connection = _DatabaseTestConnection()
+    database = ExtraIDDatabase("postgresql://unused")
+    database._pool = _DatabaseTestPool(connection)
+
+    issued = await database.create_account_action_token(
+        token_id=uuid.uuid4(),
+        extra_account_id=uuid.uuid4(),
+        purpose="verify_email",
+        token_hash="a" * 64,
+        email_snapshot="New@Example.com",
+        ttl_seconds=900,
+        cooldown_seconds=60,
+    )
+
+    assert issued is True
+    cooldown_query, cooldown_args = next(
+        (query, args)
+        for query, args in connection.fetchvals
+        if "FROM account_action_tokens" in query
+    )
+    assert "consumed_at IS NULL" in cooldown_query
+    assert "LOWER(email_snapshot) = LOWER($4)" in cooldown_query
+    assert cooldown_args[3] == "new@example.com"
+
+
+@pytest.mark.asyncio
+async def test_email_change_database_transaction_replaces_tokens_and_outbox():
+    from infrastructure.extraid_database import ExtraIDDatabase
+
+    connection = _DatabaseTestConnection()
+    database = ExtraIDDatabase("postgresql://unused")
+    database._pool = _DatabaseTestPool(connection)
+    account_id = uuid.uuid4()
+
+    result = await database.change_unverified_email_and_enqueue_verification(
+        account_id,
+        new_email="New@Example.com",
+        expected_old_email="Old@Example.com",
+    )
+
+    assert result == "changed"
+    statements = [query for query, _args in connection.executed]
+    consume_index = next(
+        index
+        for index, query in enumerate(statements)
+        if "UPDATE account_action_tokens" in query
+    )
+    delete_index = next(
+        index
+        for index, query in enumerate(statements)
+        if "DELETE FROM extraid_email_outbox" in query
+    )
+    insert_index = next(
+        index
+        for index, query in enumerate(statements)
+        if "INSERT INTO extraid_email_outbox" in query
+    )
+    assert "'cancel_registration'" in statements[consume_index]
+    assert consume_index < delete_index < insert_index
+    assert connection.executed[insert_index][1] == (
+        account_id,
+        "new@example.com",
+    )
+
+
+@pytest.mark.asyncio
+async def test_email_password_session_atomically_retires_only_anonymous_sessions():
+    from infrastructure.extraid_database import ExtraIDDatabase
+
+    connection = _DatabaseTestConnection()
+    database = ExtraIDDatabase("postgresql://unused")
+    database._pool = _DatabaseTestPool(connection)
+    session_id = uuid.uuid4()
+
+    await database.create_email_password_session(
+        session_id=session_id,
+        user_id=777,
+        token_hash="b" * 64,
+        expires_at=SimpleNamespace(),
+        device_label="Pixel",
+    )
+
+    statements = [query for query, _args in connection.executed]
+    assert "'email_password'" in statements[0]
+    anonymous_revoke = next(
+        query
+        for query in statements
+        if "UPDATE auth_sessions" in query
+    )
+    assert "auth_method = 'android_anonymous'" in anonymous_revoke
+    assert "auth_method = 'email_password'" not in anonymous_revoke
+    assert any("UPDATE anonymous_auth_bootstraps" in query for query in statements)
+
+
+@pytest.mark.asyncio
+async def test_failed_email_password_session_insert_does_not_attempt_revocation():
+    from infrastructure.extraid_database import ExtraIDDatabase
+
+    connection = _DatabaseTestConnection(fail_session_insert=True)
+    database = ExtraIDDatabase("postgresql://unused")
+    database._pool = _DatabaseTestPool(connection)
+
+    with pytest.raises(RuntimeError, match="session_insert_failed"):
+        await database.create_email_password_session(
+            session_id=uuid.uuid4(),
+            user_id=777,
+            token_hash="c" * 64,
+            expires_at=SimpleNamespace(),
+        )
+
+    assert len(connection.executed) == 1
+    assert "INSERT INTO auth_sessions" in connection.executed[0][0]
+
+
+@pytest.mark.asyncio
+async def test_password_reset_disables_old_anonymous_bootstrap_in_same_transaction():
+    from infrastructure.extraid_database import ExtraIDDatabase
+
+    account_id = uuid.uuid4()
+    token_id = uuid.uuid4()
+    user_id = 9_100_000_000_123
+
+    class PasswordResetConnection(_DatabaseTestConnection):
+        def __init__(self):
+            super().__init__()
+            self.bootstrap_disabled_at = None
+
+        async def fetchrow(self, query, *args):
+            self.fetchrows.append((query, args))
+            if "FROM account_action_tokens t" in query:
+                return {
+                    "id": token_id,
+                    "extra_account_id": account_id,
+                    "purpose": "password_reset",
+                    "token_hash": "reset-hash",
+                    "email_snapshot": "player@example.com",
+                    "attempts": 0,
+                    "created_at": datetime.now(timezone.utc),
+                    "expires_at": datetime.now(timezone.utc) + timedelta(minutes=30),
+                    "consumed_at": None,
+                    "user_id": user_id,
+                    "email": "player@example.com",
+                    "deleted_at": None,
+                    "reg_bonus_claimed": False,
+                    "registration_origin": "existing_user",
+                }
+            if "UPDATE extra_accounts" in query:
+                return {"id": account_id}
+            if "FROM anonymous_auth_bootstraps" in query:
+                return {
+                    "bootstrap_id": "A" * 43,
+                    "secret_hash": "bootstrap-hash",
+                    "user_id": user_id,
+                    "generation": 2,
+                    "disabled_at": self.bootstrap_disabled_at,
+                }
+            return None
+
+        async def execute(self, query, *args):
+            self.executed.append((query, args))
+            if "UPDATE anonymous_auth_bootstraps" in query:
+                self.bootstrap_disabled_at = datetime.now(timezone.utc)
+            return "UPDATE 1"
+
+    connection = PasswordResetConnection()
+    database = ExtraIDDatabase("postgresql://unused")
+    database._pool = _DatabaseTestPool(connection)
+
+    consumed = await database.consume_password_reset_token(
+        token_id=token_id,
+        token_hash="reset-hash",
+        new_password_hash="new-password-hash",
+    )
+    replay = await database.create_anonymous_bootstrap_session(
+        bootstrap_id="A" * 43,
+        secret_hash="bootstrap-hash",
+        session_id=uuid.uuid4(),
+        token_hash="fresh-jwt-hash",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+
+    assert consumed is not None
+    assert connection.bootstrap_disabled_at is not None
+    assert replay == {
+        "status": "bootstrap_upgraded",
+        "user_id": user_id,
+    }
+    statements = [query for query, _args in connection.executed]
+    session_revoke_index = next(
+        index
+        for index, query in enumerate(statements)
+        if "UPDATE auth_sessions" in query
+    )
+    bootstrap_disable_index = next(
+        index
+        for index, query in enumerate(statements)
+        if "UPDATE anonymous_auth_bootstraps" in query
+    )
+    assert session_revoke_index < bootstrap_disable_index
+    assert not any("INSERT INTO auth_sessions" in query for query in statements)
+
+
+@pytest.mark.asyncio
+async def test_wrong_password_does_not_revoke_anonymous_session(monkeypatch):
+    game_db = FakeGameDB()
+    extra_db = LoginExtraIDDB()
+    monkeypatch.setattr(
+        extraid_handlers.bcrypt,
+        "checkpw",
+        lambda _password, _stored: False,
+    )
+
+    response = await extraid_handlers.extraid_login_handler(
+        FakeRequest(
+            {"email": "player@example.com", "password": "wrongpass"},
+            app={"db": game_db, "extraid_db": extra_db},
+        )
+    )
+
+    assert response.status == 401
+    assert json.loads(response.text)["error"] == "invalid_credentials"
+    assert extra_db.created_email_sessions == []

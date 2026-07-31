@@ -21,25 +21,41 @@ final class ExtraIdAccountStore {
         final String displayId;
         final long userId;
         final String baseUrl;
+        final String credentialScope;
         final long lastUsedAt;
 
-        ExtraIdAccount(String email, String token, String displayId, long userId, String baseUrl, long lastUsedAt) {
+        ExtraIdAccount(
+                String email,
+                String token,
+                String displayId,
+                long userId,
+                String baseUrl,
+                String credentialScope,
+                long lastUsedAt
+        ) {
             this.email = email == null ? "" : email.trim().toLowerCase(Locale.ROOT);
             this.token = token == null ? "" : token;
             this.displayId = displayId == null ? "" : displayId.trim();
             this.userId = userId;
-            this.baseUrl = BaseUrlStore.normalize(baseUrl);
+            this.baseUrl = BaseUrlStore.identityBaseUrl(baseUrl);
+            this.credentialScope = credentialScope == null || credentialScope.trim().isEmpty()
+                    ? BaseUrlStore.identityScope(baseUrl)
+                    : credentialScope.trim();
             this.lastUsedAt = lastUsedAt;
         }
     }
 
     static List<ExtraIdAccount> getAccounts(Context context, String baseUrl) {
-        String normalizedBaseUrl = BaseUrlStore.normalize(baseUrl);
+        String selectedScope = credentialScope(context, baseUrl);
         ArrayList<ExtraIdAccount> result = new ArrayList<>();
-        for (ExtraIdAccount account : parseAccounts(SecurePrefs.getString(context, KEY_ACCOUNTS, ""))) {
-            if (account.baseUrl.equals(normalizedBaseUrl)
+        for (ExtraIdAccount account : loadAccounts(context)) {
+            if (account.credentialScope.equals(selectedScope)
                     && !account.token.isEmpty()
-                    && !AuthClient.isRevocationPending(context, account.baseUrl, account.token)) {
+                    && !AuthClient.isRevocationPendingForScope(
+                    context,
+                    account.credentialScope,
+                    account.token
+            )) {
                 result.add(account);
             }
         }
@@ -75,20 +91,22 @@ final class ExtraIdAccountStore {
             return;
         }
 
-        ArrayList<ExtraIdAccount> accounts = parseAccounts(SecurePrefs.getString(context, KEY_ACCOUNTS, ""));
+        ArrayList<ExtraIdAccount> accounts = loadAccounts(context);
         ExtraIdAccount next = new ExtraIdAccount(
                 cleanEmail,
                 token,
                 displayId,
                 userId,
                 baseUrl,
+                credentialScope(context, baseUrl),
                 System.currentTimeMillis()
         );
 
         boolean replaced = false;
         for (int i = 0; i < accounts.size(); i++) {
             ExtraIdAccount account = accounts.get(i);
-            if (account.email.equals(next.email) && account.baseUrl.equals(next.baseUrl)) {
+            if (account.email.equals(next.email)
+                    && account.credentialScope.equals(next.credentialScope)) {
                 accounts.set(i, next);
                 replaced = true;
                 break;
@@ -119,24 +137,27 @@ final class ExtraIdAccountStore {
     }
 
     static boolean activateAccount(Context context, String baseUrl, String email) {
-        String normalizedBaseUrl = BaseUrlStore.normalize(baseUrl);
+        String selectedScope = credentialScope(context, baseUrl);
         String cleanEmail = email == null ? "" : email.trim().toLowerCase(Locale.ROOT);
         if (cleanEmail.isEmpty()) {
             return false;
         }
 
-        ArrayList<ExtraIdAccount> accounts = parseAccounts(SecurePrefs.getString(context, KEY_ACCOUNTS, ""));
+        ArrayList<ExtraIdAccount> accounts = loadAccounts(context);
         ExtraIdAccount selected = null;
         long now = System.currentTimeMillis();
         for (int i = 0; i < accounts.size(); i++) {
             ExtraIdAccount account = accounts.get(i);
-            if (account.baseUrl.equals(normalizedBaseUrl) && account.email.equals(cleanEmail) && !account.token.isEmpty()) {
+            if (account.credentialScope.equals(selectedScope)
+                    && account.email.equals(cleanEmail)
+                    && !account.token.isEmpty()) {
                 selected = new ExtraIdAccount(
                         account.email,
                         account.token,
                         account.displayId,
                         account.userId,
                         account.baseUrl,
+                        account.credentialScope,
                         now
                 );
                 accounts.set(i, selected);
@@ -153,19 +174,20 @@ final class ExtraIdAccountStore {
     }
 
     static boolean removeAccount(Context context, String baseUrl, String email, String activeToken) {
-        String normalizedBaseUrl = BaseUrlStore.normalize(baseUrl);
+        String selectedScope = credentialScope(context, baseUrl);
         String cleanEmail = email == null ? "" : email.trim().toLowerCase(Locale.ROOT);
         String active = activeToken == null ? "" : activeToken;
         if (cleanEmail.isEmpty()) {
             return false;
         }
 
-        ArrayList<ExtraIdAccount> accounts = parseAccounts(SecurePrefs.getString(context, KEY_ACCOUNTS, ""));
+        ArrayList<ExtraIdAccount> accounts = loadAccounts(context);
         boolean removed = false;
         boolean removedActive = false;
         for (int i = accounts.size() - 1; i >= 0; i--) {
             ExtraIdAccount account = accounts.get(i);
-            if (account.baseUrl.equals(normalizedBaseUrl) && account.email.equals(cleanEmail)) {
+            if (account.credentialScope.equals(selectedScope)
+                    && account.email.equals(cleanEmail)) {
                 removedActive = removedActive || (!active.isEmpty() && active.equals(account.token));
                 AuthClient.logoutBestEffort(context, account.token);
                 accounts.remove(i);
@@ -185,17 +207,18 @@ final class ExtraIdAccountStore {
     }
 
     static boolean removeAccountByToken(Context context, String baseUrl, String token) {
-        String normalizedBaseUrl = BaseUrlStore.normalize(baseUrl);
+        String selectedScope = credentialScope(context, baseUrl);
         String cleanToken = token == null ? "" : token.trim();
         if (cleanToken.isEmpty()) {
             return false;
         }
 
-        ArrayList<ExtraIdAccount> accounts = parseAccounts(SecurePrefs.getString(context, KEY_ACCOUNTS, ""));
+        ArrayList<ExtraIdAccount> accounts = loadAccounts(context);
         boolean removed = false;
         for (int i = accounts.size() - 1; i >= 0; i--) {
             ExtraIdAccount account = accounts.get(i);
-            if (account.baseUrl.equals(normalizedBaseUrl) && account.token.equals(cleanToken)) {
+            if (account.credentialScope.equals(selectedScope)
+                    && account.token.equals(cleanToken)) {
                 accounts.remove(i);
                 removed = true;
             }
@@ -204,24 +227,26 @@ final class ExtraIdAccountStore {
     }
 
     static void touchAccountByToken(Context context, String baseUrl, String token) {
-        String normalizedBaseUrl = BaseUrlStore.normalize(baseUrl);
+        String selectedScope = credentialScope(context, baseUrl);
         String activeToken = token == null ? "" : token;
         if (activeToken.isEmpty()) {
             return;
         }
 
-        ArrayList<ExtraIdAccount> accounts = parseAccounts(SecurePrefs.getString(context, KEY_ACCOUNTS, ""));
+        ArrayList<ExtraIdAccount> accounts = loadAccounts(context);
         boolean changed = false;
         long now = System.currentTimeMillis();
         for (int i = 0; i < accounts.size(); i++) {
             ExtraIdAccount account = accounts.get(i);
-            if (account.baseUrl.equals(normalizedBaseUrl) && activeToken.equals(account.token)) {
+            if (account.credentialScope.equals(selectedScope)
+                    && activeToken.equals(account.token)) {
                 accounts.set(i, new ExtraIdAccount(
                         account.email,
                         account.token,
                         account.displayId,
                         account.userId,
                         account.baseUrl,
+                        account.credentialScope,
                         now
                 ));
                 changed = true;
@@ -233,11 +258,13 @@ final class ExtraIdAccountStore {
         }
     }
 
-    private static ArrayList<ExtraIdAccount> parseAccounts(String raw) {
+    private static ArrayList<ExtraIdAccount> loadAccounts(Context context) {
+        String raw = SecurePrefs.getString(context, KEY_ACCOUNTS, "");
         ArrayList<ExtraIdAccount> accounts = new ArrayList<>();
         if (raw == null || raw.trim().isEmpty()) {
             return accounts;
         }
+        boolean migrated = false;
         try {
             JSONArray array = new JSONArray(raw);
             for (int i = 0; i < array.length(); i++) {
@@ -245,19 +272,45 @@ final class ExtraIdAccountStore {
                 if (item == null) {
                     continue;
                 }
+                String baseUrl = item.optString(
+                        "base_url",
+                        BuildConfig.DEFAULT_BASE_URL
+                );
+                String storedScope = item.optString("credential_scope", "").trim();
+                if (storedScope.isEmpty()) {
+                    // Legacy rows had no tenant binding. Bind them exactly once
+                    // to the profile selected at upgrade time, just like the
+                    // legacy global auth token migration.
+                    storedScope = credentialScope(context, baseUrl);
+                    migrated = true;
+                }
                 accounts.add(new ExtraIdAccount(
                         item.optString("email", ""),
                         item.optString("token", ""),
                         item.optString("display_id", ""),
                         item.optLong("user_id", 0L),
-                        item.optString("base_url", BuildConfig.DEFAULT_BASE_URL),
+                        baseUrl,
+                        storedScope,
                         item.optLong("last_used_at", 0L)
                 ));
             }
         } catch (Exception ignored) {
             accounts.clear();
+            return accounts;
+        }
+        if (migrated) {
+            persistAccounts(context, accounts);
         }
         return accounts;
+    }
+
+    private static String credentialScope(Context context, String baseUrl) {
+        ConnectionProfileStore.ConnectionProfile selected =
+                ConnectionProfileStore.getSelectedProfile(context);
+        String whitelistCode = BaseUrlStore.normalize(selected.baseUrl).equals(
+                BaseUrlStore.normalize(baseUrl)
+        ) && selected.whitelistEnabled ? selected.whitelistCode : "";
+        return BaseUrlStore.identityScope(baseUrl, whitelistCode);
     }
 
     private static boolean persistAccounts(Context context, List<ExtraIdAccount> accounts) {
@@ -270,6 +323,7 @@ final class ExtraIdAccountStore {
                 item.put("display_id", account.displayId);
                 item.put("user_id", account.userId);
                 item.put("base_url", account.baseUrl);
+                item.put("credential_scope", account.credentialScope);
                 item.put("last_used_at", account.lastUsedAt);
                 array.put(item);
             } catch (Exception ignored) {

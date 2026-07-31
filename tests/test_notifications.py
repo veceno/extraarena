@@ -79,6 +79,26 @@ def test_discretionary_budget_excludes_social_notifications_and_prioritizes_rewa
 
 
 @pytest.mark.asyncio
+async def test_daily_rewards_default_off_when_user_settings_row_is_missing():
+    class MissingSettingsDB(Database):
+        def __init__(self):
+            super().__init__(DatabaseSettings("localhost", 5432, "user", "pass", "db"))
+            self._pool = object()
+
+        async def fetchrow(self, query, *args):
+            assert query == (
+                "SELECT notif_daily_rewards FROM user_settings WHERE user_id = $1"
+            )
+            assert args == (42,)
+            return None
+
+    db = MissingSettingsDB()
+
+    assert NOTIFICATION_DEFAULTS["notif_daily_rewards"] is False
+    assert await db.is_notification_enabled(42, "daily_rewards") is False
+
+
+@pytest.mark.asyncio
 async def test_generator_notifications_fire_only_on_ready_and_full_transitions():
     class GeneratorDB(Database):
         def __init__(self):

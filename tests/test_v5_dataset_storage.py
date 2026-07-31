@@ -779,6 +779,29 @@ async def test_stale_marker_and_prune_only_operate_on_whole_trace_headers():
     assert calls[1][1] == (90, 30, 25)
 
 
+@pytest.mark.asyncio
+async def test_stale_marker_explicitly_types_reason_parameter_for_jsonb():
+    db = _db()
+    db._pool = object()
+    captured: dict[str, object] = {}
+
+    async def fake_fetch(query: str, *args):
+        captured["query"] = query
+        captured["args"] = args
+        return []
+
+    db.fetch = fake_fetch
+    result = await db.mark_stale_v5_battle_traces_aborted(
+        older_than_seconds=60,
+        reason="stale_test_trace",
+    )
+
+    assert result["marked"] == 0
+    assert "abort_reason = $2::text" in captured["query"]
+    assert "'abort_reason', $2::text" in captured["query"]
+    assert captured["args"] == (60, "stale_test_trace")
+
+
 def test_v5_journal_migration_has_required_keys_and_indexes():
     source = inspect.getsource(Database._ensure_battle_v5_trace_tables)
 

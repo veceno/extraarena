@@ -493,6 +493,19 @@ class TutorialBattleEngine(BattleEngine):
     def set_tutorial_step(self, step: int) -> None:
         self._replay_to_step(max(0, min(int(step), TUTORIAL_FINAL_STEP)))
 
+    # The tutorial advances only through the scripted onboarding actions.  Keep
+    # the ordinary battle clock visible in the serialized schema for client
+    # compatibility, but never let it expire or feed the regular AFK takeover
+    # machinery while a player reads a hint, backgrounds the app, or resumes.
+    def get_turn_time_remaining(self) -> float:
+        return float(self.turn_duration)
+
+    def is_turn_expired(self) -> bool:
+        return False
+
+    def mark_timeout(self, player_id: int) -> None:
+        return None
+
     # -- advance along the graph -------------------------------------------
 
     def _advance_to_next_step(self, from_path_index: int) -> dict[str, Any] | None:

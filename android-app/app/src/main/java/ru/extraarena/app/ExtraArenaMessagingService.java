@@ -5,7 +5,6 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
-import android.net.Uri;
 import android.os.Build;
 
 import com.google.firebase.messaging.FirebaseMessagingService;
@@ -45,14 +44,22 @@ public class ExtraArenaMessagingService extends FirebaseMessagingService {
     }
 
     private void showUpdateNotification(Map<String, String> data) {
+        boolean required = "app_update_required".equals(data.get("type"));
         String title = data.containsKey("title") ? data.get("title") : "⬇️ Хорошие новости!";
         String body = data.containsKey("body")
                 ? data.get("body")
-                : "⬇️ Вышло обновление, скачай новую версию, чтобы продолжить игру";
-        String url = sanitizeUpdateUrl(data.get("url"));
-
-        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-        intent.addCategory(Intent.CATEGORY_BROWSABLE);
+                : required
+                ? "Вышло обязательное обновление ExtraArena. Открой приложение, чтобы установить его."
+                : "Вышла новая версия ExtraArena. Открой приложение, чтобы посмотреть обновление.";
+        Intent intent = new Intent(this, MainActivity.class);
+        intent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        intent.setAction("ru.extraarena.app.PUSH");
+        intent.setPackage(getPackageName());
+        intent.putExtra("type", data.containsKey("type") ? data.get("type") : "app_update");
+        String releaseId = data.get("release_id");
+        if (releaseId != null && !releaseId.trim().isEmpty()) {
+            intent.putExtra("release_id", releaseId.trim());
+        }
         PendingIntent pendingIntent = PendingIntent.getActivity(
                 this,
                 100,
@@ -142,17 +149,6 @@ public class ExtraArenaMessagingService extends FirebaseMessagingService {
     private int makeGameNotificationId(String title, String body, String section, String category) {
         String seed = String.valueOf(title) + "|" + String.valueOf(body) + "|" + String.valueOf(section) + "|" + String.valueOf(category) + "|" + System.currentTimeMillis();
         return 7200 + Math.floorMod(seed.hashCode(), 100000);
-    }
-
-    private String sanitizeUpdateUrl(String rawUrl) {
-        String url = rawUrl == null ? "" : rawUrl.trim();
-        if ("rustore".equals(BuildConfig.DISTRIBUTION_CHANNEL)) {
-            return BuildConfig.RUSTORE_APP_URL.equals(url) ? url : BuildConfig.RUSTORE_APP_URL;
-        }
-        if (BuildConfig.UPDATE_CHANNEL_URL.equals(url) || BuildConfig.UPDATE_APK_URL.equals(url)) {
-            return url;
-        }
-        return BuildConfig.UPDATE_CHANNEL_URL;
     }
 
     private void notify(int id, Notification notification) {

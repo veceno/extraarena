@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import json
@@ -124,6 +125,7 @@ class _TutorialRouteDB:
         self.ensure_user_calls = []
         self.events = []
         self.coins_granted = 0
+        self.welcome_shown_calls = 0
 
     async def ensure_user(self, *, user_id, username, first_name, last_name):
         self.ensure_user_calls.append(int(user_id))
@@ -182,6 +184,9 @@ class _TutorialRouteDB:
 
     async def track_onboarding_event(self, user_id, event_name, completed=False, metadata=None):
         self.events.append((int(user_id), event_name, completed, metadata or {}))
+
+    async def mark_welcome_shown(self, user_id):
+        self.welcome_shown_calls += 1
 
     async def get_user_info(self, user_id):
         return {"extra_pass": "inactive"}
@@ -352,13 +357,53 @@ def test_tutorial_card_ids_survive_step_rebuild_before_attack():
     assert engine._arena.state.p2.hero.hp == 4
 
 
-def test_tutorial_battle_uses_tutorial_only_names_and_long_timer():
-    state = TutorialBattleEngine(user_id=USER_ID).get_full_state(viewer_id=USER_ID)
+def test_tutorial_battle_uses_tutorial_only_names_and_non_expiring_timer():
+    engine = TutorialBattleEngine(user_id=USER_ID)
+    state = engine.get_full_state(viewer_id=USER_ID)
 
     assert state["player"]["name"] == "Ты"
     assert state["opponent"]["name"] == "Кто-то злой"
     assert state["turn_duration"] == 99
     assert state["turn_time_remaining"] == 99
+
+    engine.turn_start_time = time.time() - 10_000
+    engine.turn_start_monotonic = time.monotonic() - 10_000
+    assert engine.get_turn_time_remaining() == 99
+    assert engine.is_turn_expired() is False
+
+    engine.mark_timeout(USER_ID)
+    engine.mark_timeout(USER_ID)
+    assert engine.p1_consecutive_timeouts == 0
+    assert engine.p1_state.replacement_status.value == "active"
+
+
+@pytest.mark.asyncio
+async def test_tutorial_runtime_is_excluded_from_timeout_and_common_bot_routines(monkeypatch):
+    engine = TutorialBattleEngine(user_id=USER_ID, tutorial_step=8)
+    match_id = str(engine.match_id)
+    engine.turn_start_time = time.time() - 10_000
+    engine.turn_start_monotonic = time.monotonic() - 10_000
+    before = engine.get_full_state(viewer_id=USER_ID)
+
+    assert await web_server._handle_natural_turn_timeout({}, match_id, engine) is False
+
+    web_server.BOT_TASKS.pop(match_id, None)
+    web_server._start_guarded_bot_task(match_id, engine, engine.bot_id)
+    assert match_id not in web_server.BOT_TASKS
+
+    started = []
+    monkeypatch.setattr(
+        web_server,
+        "_start_guarded_bot_task",
+        lambda *args, **kwargs: started.append((args, kwargs)),
+    )
+    await web_server.check_and_run_bot(match_id, {match_id: engine})
+
+    after = engine.get_full_state(viewer_id=USER_ID)
+    assert started == []
+    assert after["tutorial"]["step_index"] == before["tutorial"]["step_index"] == 8
+    assert after["current_player_id"] == before["current_player_id"] == engine.bot_id
+    assert engine.p1_state.replacement_status.value == "active"
 
 
 def test_tutorial_payload_exposes_screen_progress_and_previous_message():
@@ -445,6 +490,193 @@ async def test_tutorial_battle_state_recovers_after_deleted_user(monkeypatch):
         await client.close()
         web_server.ACTIVE_MATCHES.pop(match_id, None)
         web_server.MATCH_LOCKS.pop(match_id, None)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_idle_tutorial_runtime_eviction_preserves_progress_and_resumes(monkeypatch):
+    match_id = f"tutorial-{USER_ID}"
+    sid = "tutorial-idle-sid"
+    disconnect_key = (match_id, USER_ID)
+
+    class ExistingTutorialUserDB(_TutorialRouteDB):
+        async def fetchval(self, query, *args):
+            if "SELECT 1 FROM users" in query:
+                return 1
+            return await super().fetchval(query, *args)
+
+    db = ExistingTutorialUserDB({
+        "status": "tutorial_battle",
+        "current_step": "tutorial_battle",
+        "tutorial_step": 4,
+        "tutorial_match_id": match_id,
+    })
+    web_server.ENDED_MATCH_IDS.discard(match_id)
+    web_server.ENDED_MATCH_TIMES.pop(match_id, None)
+    client = await _onboarding_route_client(monkeypatch, db)
+    bot_task = None
+    disconnect_task = None
+
+    try:
+        initial_response = await client.get(
+            f"/api/battle/state?match_id={match_id}&user_id={USER_ID}"
+        )
+        initial_state = await initial_response.json()
+        assert initial_response.status == 200
+        engine = web_server.ACTIVE_MATCHES[match_id]
+
+        bot_task = asyncio.create_task(asyncio.Event().wait())
+        disconnect_task = asyncio.create_task(asyncio.Event().wait())
+        web_server.BOT_TASKS[match_id] = bot_task
+        web_server.BOT_TASK_KEYS[match_id] = (str(engine.bot_id), int(engine.turn))
+        web_server.BOT_TASK_OWNERS[match_id] = client.app
+        web_server.MATCH_DISCONNECT_TASKS[disconnect_key] = disconnect_task
+        web_server.MATCH_DISCONNECT_STATES[disconnect_key] = {
+            "disconnected_at": time.time(),
+            "timed_out_turns": 0,
+            "takeover_started": False,
+        }
+        web_server.MATCH_SESSIONS[match_id] = {USER_ID: {sid}}
+        web_server.SID_TO_MATCH[sid] = {"match_id": match_id, "user_id": USER_ID}
+        web_server.MATCH_INIT_LOCKS[match_id] = asyncio.Lock()
+
+        durable_state_before = dict(db.state)
+        events_before = list(db.events)
+        timeout_counts_before = (
+            engine.p1_consecutive_timeouts,
+            engine.p2_consecutive_timeouts,
+        )
+        replacement_before = engine.get_player_replacement_status(USER_ID)
+        clock = time.monotonic()
+        web_server._touch_onboarding_tutorial_runtime(
+            engine,
+            now_monotonic=clock - 11,
+            ttl_seconds=10,
+        )
+
+        evicted = await web_server._evict_idle_onboarding_tutorial_runtimes(
+            client.app,
+            now_monotonic=clock,
+            ttl_seconds=10,
+        )
+
+        assert evicted == 1
+        assert match_id not in web_server.ACTIVE_MATCHES
+        assert match_id not in client.app["active_matches"]
+        assert match_id not in client.app["match_game_modes"]
+        assert match_id not in web_server.MATCH_SESSIONS
+        assert sid not in web_server.SID_TO_MATCH
+        assert disconnect_key not in web_server.MATCH_DISCONNECT_TASKS
+        assert disconnect_key not in web_server.MATCH_DISCONNECT_STATES
+        assert match_id not in web_server.BOT_TASKS
+        assert match_id not in web_server.BOT_TASK_KEYS
+        assert match_id not in web_server.BOT_TASK_OWNERS
+        assert match_id not in web_server.MATCH_LOCKS
+        assert match_id not in web_server.MATCH_INIT_LOCKS
+        assert bot_task.cancelled()
+        assert disconnect_task.cancelled()
+        assert engine.runtime_evicted is True
+        assert engine.is_ended is False
+        assert not getattr(engine, "runtime_closed", False)
+        assert match_id not in web_server.ENDED_MATCH_IDS
+        assert dict(db.state) == durable_state_before
+        assert db.events == events_before
+        assert (
+            engine.p1_consecutive_timeouts,
+            engine.p2_consecutive_timeouts,
+        ) == timeout_counts_before
+        assert engine.get_player_replacement_status(USER_ID) == replacement_before
+
+        resumed_response = await client.get(
+            f"/api/battle/state?match_id={match_id}&user_id={USER_ID}"
+        )
+        resumed_state = await resumed_response.json()
+        resumed_engine = web_server.ACTIVE_MATCHES[match_id]
+
+        assert resumed_response.status == 200
+        assert resumed_engine is not engine
+        assert resumed_engine.match_id == engine.match_id == match_id
+        assert resumed_engine.tutorial_step == engine.tutorial_step == 4
+        assert dict(db.state) == durable_state_before
+        assert db.events == events_before
+        for key in ("current_player_id", "player", "opponent", "legal_actions", "tutorial"):
+            assert resumed_state[key] == initial_state[key]
+    finally:
+        for task in (bot_task, disconnect_task):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (bot_task, disconnect_task) if task is not None),
+            return_exceptions=True,
+        )
+        await client.close()
+        web_server.ACTIVE_MATCHES.pop(match_id, None)
+        web_server.MATCH_LOCKS.pop(match_id, None)
+        web_server.MATCH_INIT_LOCKS.pop(match_id, None)
+        web_server.MATCH_SESSIONS.pop(match_id, None)
+        web_server.SID_TO_MATCH.pop(sid, None)
+        web_server.MATCH_DISCONNECT_TASKS.pop(disconnect_key, None)
+        web_server.MATCH_DISCONNECT_STATES.pop(disconnect_key, None)
+        web_server.BOT_TASKS.pop(match_id, None)
+        web_server.BOT_TASK_KEYS.pop(match_id, None)
+        web_server.BOT_TASK_OWNERS.pop(match_id, None)
+        web_server.ENDED_MATCH_IDS.discard(match_id)
+        web_server.ENDED_MATCH_TIMES.pop(match_id, None)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_tutorial_state_interaction_refreshes_idle_deadline(monkeypatch):
+    match_id = f"tutorial-{USER_ID}"
+    db = _TutorialRouteDB({
+        "status": "tutorial_battle",
+        "current_step": "tutorial_battle",
+        "tutorial_step": 2,
+        "tutorial_match_id": match_id,
+    })
+    client = await _onboarding_route_client(monkeypatch, db)
+
+    try:
+        first = await client.get(
+            f"/api/battle/state?match_id={match_id}&user_id={USER_ID}"
+        )
+        assert first.status == 200
+        engine = web_server.ACTIVE_MATCHES[match_id]
+
+        ttl_seconds = 5.0
+        clock = time.monotonic()
+        web_server._touch_onboarding_tutorial_runtime(
+            engine,
+            now_monotonic=clock - ttl_seconds + 0.1,
+            ttl_seconds=ttl_seconds,
+        )
+        old_deadline = engine.onboarding_runtime_idle_deadline_monotonic
+
+        interaction = await client.get(
+            f"/api/battle/state?match_id={match_id}&user_id={USER_ID}"
+        )
+        assert interaction.status == 200
+        refreshed_at = engine.onboarding_runtime_last_activity_monotonic
+        assert refreshed_at >= clock
+        assert engine.onboarding_runtime_idle_deadline_monotonic > old_deadline
+
+        assert await web_server._evict_idle_onboarding_tutorial_runtimes(
+            client.app,
+            now_monotonic=old_deadline + 1,
+            ttl_seconds=ttl_seconds,
+        ) == 0
+        assert web_server.ACTIVE_MATCHES[match_id] is engine
+
+        assert await web_server._evict_idle_onboarding_tutorial_runtimes(
+            client.app,
+            now_monotonic=refreshed_at + ttl_seconds,
+            ttl_seconds=ttl_seconds,
+        ) == 1
+        assert match_id not in web_server.ACTIVE_MATCHES
+    finally:
+        await client.close()
+        web_server.ACTIVE_MATCHES.pop(match_id, None)
+        web_server.MATCH_LOCKS.pop(match_id, None)
+        web_server.ENDED_MATCH_IDS.discard(match_id)
+        web_server.ENDED_MATCH_TIMES.pop(match_id, None)
 
 
 @pytest.mark.asyncio(loop_scope="function")
@@ -536,8 +768,19 @@ async def test_tutorial_final_complete_endpoint_moves_to_menu_tour(monkeypatch):
         "tutorial_match_id": match_id,
     })
     client = await _onboarding_route_client(monkeypatch, db)
+    bot_task = None
 
     try:
+        state_response = await client.get(
+            f"/api/battle/state?match_id={match_id}&user_id={USER_ID}"
+        )
+        assert state_response.status == 200
+        engine = web_server.ACTIVE_MATCHES[match_id]
+        bot_task = asyncio.create_task(asyncio.Event().wait())
+        web_server.BOT_TASKS[match_id] = bot_task
+        web_server.BOT_TASK_KEYS[match_id] = (str(engine.bot_id), int(engine.turn))
+        web_server.BOT_TASK_OWNERS[match_id] = client.app
+
         response = await client.post(
             "/api/onboarding/tutorial/action",
             json={
@@ -557,6 +800,13 @@ async def test_tutorial_final_complete_endpoint_moves_to_menu_tour(monkeypatch):
         assert "state" not in body
         assert db.state["status"] == "menu_tour"
         assert db.state["menu_step"] == "reward"
+        assert match_id not in web_server.ACTIVE_MATCHES
+        assert match_id not in client.app["active_matches"]
+        assert match_id not in client.app["match_game_modes"]
+        assert match_id not in web_server.BOT_TASKS
+        assert match_id not in web_server.BOT_TASK_KEYS
+        assert match_id not in web_server.BOT_TASK_OWNERS
+        assert bot_task.cancelled()
         handoff_events_after_first_complete = [
             event for event in db.events
             if event[1] in {"tutorial_battle_completed", "menu_tour_started"}
@@ -578,14 +828,24 @@ async def test_tutorial_final_complete_endpoint_moves_to_menu_tour(monkeypatch):
         assert repeat_body["redirect_url"] == "/?onboarding_menu=1"
         assert "state" not in repeat_body
         assert db.state["status"] == "menu_tour"
+        assert match_id not in web_server.ACTIVE_MATCHES
+        assert match_id not in client.app["active_matches"]
         assert [
             event for event in db.events
             if event[1] in {"tutorial_battle_completed", "menu_tour_started"}
         ] == handoff_events_after_first_complete
     finally:
+        if bot_task is not None and not bot_task.done():
+            bot_task.cancel()
+            await asyncio.gather(bot_task, return_exceptions=True)
         await client.close()
         web_server.ACTIVE_MATCHES.pop(match_id, None)
         web_server.MATCH_LOCKS.pop(match_id, None)
+        web_server.BOT_TASKS.pop(match_id, None)
+        web_server.BOT_TASK_KEYS.pop(match_id, None)
+        web_server.BOT_TASK_OWNERS.pop(match_id, None)
+        web_server.ENDED_MATCH_IDS.discard(match_id)
+        web_server.ENDED_MATCH_TIMES.pop(match_id, None)
         web_server.ACTION_RESULT_CACHE.clear()
 
 
@@ -628,6 +888,486 @@ async def test_tutorial_complete_preserves_completed_onboarding(monkeypatch):
         web_server.ACTIVE_MATCHES.pop(match_id, None)
         web_server.MATCH_LOCKS.pop(match_id, None)
         web_server.ACTION_RESULT_CACHE.clear()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_onboarding_transition_events_have_one_canonical_server_row(monkeypatch):
+    match_id = f"tutorial-{USER_ID}"
+    db = _TutorialRouteDB()
+    client = await _onboarding_route_client(monkeypatch, db)
+
+    try:
+        mirrored_welcome = await client.post(
+            f"/api/analytics/onboarding?user_id={USER_ID}",
+            json={
+                "step": "welcome_completed",
+                "completed": True,
+                "metadata": {"source": "onboarding_gate"},
+            },
+        )
+        assert mirrored_welcome.status == 200
+        assert (await mirrored_welcome.json())["canonical"] is True
+
+        welcome = await client.post(
+            f"/api/onboarding/welcome/complete?user_id={USER_ID}"
+        )
+        assert welcome.status == 200
+        repeat_welcome = await client.post(
+            f"/api/welcome/mark-shown?user_id={USER_ID}"
+        )
+        assert repeat_welcome.status == 200
+
+        welcome_events = [event for event in db.events if event[1] == "welcome_completed"]
+        assert welcome_events == [
+            (USER_ID, "welcome_completed", True, {"source": "onboarding_gate"})
+        ]
+
+        db.state.update({
+            "status": "menu_tour",
+            "current_step": "menu_tour",
+            "tutorial_step": TUTORIAL_FINAL_STEP,
+            "tutorial_match_id": match_id,
+            "menu_step": "done",
+        })
+        mirrored_complete = await client.post(
+            f"/api/analytics/onboarding?user_id={USER_ID}",
+            json={
+                "step": "mandatory_onboarding_completed",
+                "completed": True,
+                "metadata": {"source": "menu_tour"},
+            },
+        )
+        assert mirrored_complete.status == 200
+        assert (await mirrored_complete.json())["canonical"] is True
+
+        complete = await client.post(f"/api/onboarding/complete?user_id={USER_ID}")
+        repeat_complete = await client.post(f"/api/onboarding/complete?user_id={USER_ID}")
+        assert complete.status == repeat_complete.status == 200
+
+        complete_events = [
+            event for event in db.events
+            if event[1] == "mandatory_onboarding_completed"
+        ]
+        assert complete_events == [
+            (USER_ID, "mandatory_onboarding_completed", True, {"source": "menu_tour"})
+        ]
+    finally:
+        await client.close()
+        web_server.ACTIVE_MATCHES.pop(match_id, None)
+        web_server.MATCH_LOCKS.pop(match_id, None)
+        web_server.ACTION_RESULT_CACHE.clear()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_concurrent_duplicate_tutorial_start_reuses_runtime_and_event(monkeypatch):
+    match_id = f"tutorial-{USER_ID}"
+
+    class ConcurrentStartDB(_TutorialRouteDB):
+        def __init__(self):
+            super().__init__({
+                "status": "tutorial_battle",
+                "current_step": "tutorial_battle",
+                "tutorial_step": 0,
+                "tutorial_match_id": match_id,
+            })
+            self.first_start_event = asyncio.Event()
+            self.release_first_start = asyncio.Event()
+
+        async def track_onboarding_event(
+            self,
+            user_id,
+            event_name,
+            completed=False,
+            metadata=None,
+        ):
+            if (
+                event_name == "tutorial_battle_started"
+                and not self.first_start_event.is_set()
+            ):
+                self.first_start_event.set()
+                await self.release_first_start.wait()
+            await super().track_onboarding_event(
+                user_id,
+                event_name,
+                completed,
+                metadata,
+            )
+
+    db = ConcurrentStartDB()
+    client = await _onboarding_route_client(monkeypatch, db)
+    try:
+        first = asyncio.create_task(
+            client.post(f"/api/onboarding/tutorial/start?user_id={USER_ID}")
+        )
+        await asyncio.wait_for(db.first_start_event.wait(), timeout=1)
+        duplicate = asyncio.create_task(
+            client.post(f"/api/onboarding/tutorial/start?user_id={USER_ID}")
+        )
+        await asyncio.sleep(0)
+        db.release_first_start.set()
+        first_response, duplicate_response = await asyncio.gather(
+            first,
+            duplicate,
+        )
+        first_body = await first_response.json()
+        duplicate_body = await duplicate_response.json()
+
+        assert first_response.status == duplicate_response.status == 200
+        assert first_body["match_id"] == duplicate_body["match_id"] == match_id
+        assert first_body["state"]["is_onboarding_tutorial"] is True
+        assert duplicate_body["state"]["is_onboarding_tutorial"] is True
+        assert web_server.ACTIVE_MATCHES[match_id] is client.app["active_matches"][match_id]
+        assert [
+            event
+            for event in db.events
+            if event[1] == "tutorial_battle_started"
+        ] == [(USER_ID, "tutorial_battle_started", True, {})]
+    finally:
+        db.release_first_start.set()
+        await client.close()
+        web_server.ACTIVE_MATCHES.pop(match_id, None)
+        web_server.MATCH_LOCKS.pop(match_id, None)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_tutorial_start_waiting_on_complete_does_not_recreate_runtime(monkeypatch):
+    match_id = f"tutorial-{USER_ID}"
+
+    class StartVsCompleteDB(_TutorialRouteDB):
+        def __init__(self):
+            super().__init__({
+                "status": "tutorial_battle",
+                "current_step": "tutorial_battle",
+                "tutorial_step": TUTORIAL_FINAL_STEP,
+                "tutorial_match_id": match_id,
+            })
+            self.menu_transition_reached = asyncio.Event()
+            self.release_completion = asyncio.Event()
+
+        async def track_onboarding_event(
+            self,
+            user_id,
+            event_name,
+            completed=False,
+            metadata=None,
+        ):
+            if event_name == "menu_tour_started":
+                self.menu_transition_reached.set()
+                await self.release_completion.wait()
+            await super().track_onboarding_event(
+                user_id,
+                event_name,
+                completed,
+                metadata,
+            )
+
+    db = StartVsCompleteDB()
+    client = await _onboarding_route_client(monkeypatch, db)
+    try:
+        state_response = await client.get(
+            f"/api/battle/state?match_id={match_id}&user_id={USER_ID}"
+        )
+        assert state_response.status == 200
+        assert match_id in web_server.ACTIVE_MATCHES
+
+        completion = asyncio.create_task(
+            client.post(
+                "/api/onboarding/tutorial/action",
+                json={
+                    "match_id": match_id,
+                    "user_id": USER_ID,
+                    "type": "complete",
+                    "client_action_id": "complete-racing-start",
+                },
+            )
+        )
+        await asyncio.wait_for(db.menu_transition_reached.wait(), timeout=1)
+        late_start = asyncio.create_task(
+            client.post(f"/api/onboarding/tutorial/start?user_id={USER_ID}")
+        )
+        await asyncio.sleep(0)
+        assert late_start.done() is False
+        db.release_completion.set()
+        complete_response, start_response = await asyncio.gather(
+            completion,
+            late_start,
+        )
+        complete_body = await complete_response.json()
+        start_body = await start_response.json()
+
+        assert complete_response.status == start_response.status == 200
+        assert complete_body["onboarding"]["status"] == "menu_tour"
+        assert start_body["onboarding"]["status"] == "menu_tour"
+        assert start_body["redirect_url"] == "/?onboarding_menu=1"
+        assert "match_id" not in start_body
+        assert "state" not in start_body
+        assert match_id not in web_server.ACTIVE_MATCHES
+        assert match_id not in client.app["active_matches"]
+        assert all(
+            event[1] != "tutorial_battle_started"
+            for event in db.events
+        )
+    finally:
+        db.release_completion.set()
+        await client.close()
+        web_server.ACTIVE_MATCHES.pop(match_id, None)
+        web_server.MATCH_LOCKS.pop(match_id, None)
+        web_server.ACTION_RESULT_CACHE.clear()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_battle_state_racing_completion_does_not_return_detached_runtime(monkeypatch):
+    match_id = f"tutorial-{USER_ID}"
+
+    class StateVsCompleteDB(_TutorialRouteDB):
+        def __init__(self):
+            super().__init__({
+                "status": "tutorial_battle",
+                "current_step": "tutorial_battle",
+                "tutorial_step": TUTORIAL_FINAL_STEP,
+                "tutorial_match_id": match_id,
+            })
+            self.pause_next_state_read = False
+            self.state_snapshot_captured = asyncio.Event()
+            self.release_state_snapshot = asyncio.Event()
+
+        async def get_onboarding_state(self, user_id):
+            # Capture the exact stale-snapshot interleaving that used to let a
+            # battle-state request return (or recreate) a detached tutorial
+            # runtime after completion had already advanced to menu_tour.
+            state = await super().get_onboarding_state(user_id)
+            if self.pause_next_state_read:
+                self.pause_next_state_read = False
+                self.state_snapshot_captured.set()
+                await self.release_state_snapshot.wait()
+            return state
+
+    db = StateVsCompleteDB()
+    client = await _onboarding_route_client(monkeypatch, db)
+    state_request = None
+    try:
+        initial_state = await client.get(
+            f"/api/battle/state?match_id={match_id}&user_id={USER_ID}"
+        )
+        assert initial_state.status == 200
+        assert match_id in web_server.ACTIVE_MATCHES
+
+        db.pause_next_state_read = True
+        state_request = asyncio.create_task(
+            client.get(f"/api/battle/state?match_id={match_id}&user_id={USER_ID}")
+        )
+        await asyncio.wait_for(db.state_snapshot_captured.wait(), timeout=1)
+
+        completion = await client.post(
+            "/api/onboarding/tutorial/action",
+            json={
+                "match_id": match_id,
+                "user_id": USER_ID,
+                "type": "complete",
+                "client_action_id": "complete-racing-battle-state",
+            },
+        )
+        completion_body = await completion.json()
+        assert completion.status == 200
+        assert completion_body["onboarding"]["status"] == "menu_tour"
+        assert match_id not in web_server.ACTIVE_MATCHES
+
+        db.release_state_snapshot.set()
+        response = await asyncio.wait_for(state_request, timeout=1)
+        body = await response.json()
+
+        assert response.status == 403
+        assert body["error"] == "onboarding_required"
+        assert body["onboarding"]["status"] == "menu_tour"
+        assert match_id not in web_server.ACTIVE_MATCHES
+        assert match_id not in client.app["active_matches"]
+    finally:
+        db.release_state_snapshot.set()
+        if state_request is not None and not state_request.done():
+            state_request.cancel()
+            await asyncio.gather(state_request, return_exceptions=True)
+        await client.close()
+        web_server.ACTIVE_MATCHES.pop(match_id, None)
+        web_server.MATCH_LOCKS.pop(match_id, None)
+        web_server.ACTION_RESULT_CACHE.clear()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_battle_state_waits_when_menu_is_persisted_before_runtime_teardown(monkeypatch):
+    match_id = f"tutorial-{USER_ID}"
+
+    class StateAfterMenuTransitionDB(_TutorialRouteDB):
+        def __init__(self):
+            super().__init__({
+                "status": "tutorial_battle",
+                "current_step": "tutorial_battle",
+                "tutorial_step": TUTORIAL_FINAL_STEP,
+                "tutorial_match_id": match_id,
+            })
+            self.menu_transition_reached = asyncio.Event()
+            self.release_completion = asyncio.Event()
+
+        async def track_onboarding_event(
+            self,
+            user_id,
+            event_name,
+            completed=False,
+            metadata=None,
+        ):
+            if event_name == "menu_tour_started":
+                # At this point menu_tour is durable but completion still owns
+                # the match lock and has not torn down the runtime yet.
+                self.menu_transition_reached.set()
+                await self.release_completion.wait()
+            await super().track_onboarding_event(
+                user_id,
+                event_name,
+                completed,
+                metadata,
+            )
+
+    db = StateAfterMenuTransitionDB()
+    client = await _onboarding_route_client(monkeypatch, db)
+    completion_task = None
+    state_request = None
+    try:
+        initial_state = await client.get(
+            f"/api/battle/state?match_id={match_id}&user_id={USER_ID}"
+        )
+        assert initial_state.status == 200
+        assert match_id in web_server.ACTIVE_MATCHES
+
+        completion_task = asyncio.create_task(
+            client.post(
+                "/api/onboarding/tutorial/action",
+                json={
+                    "match_id": match_id,
+                    "user_id": USER_ID,
+                    "type": "complete",
+                    "client_action_id": "complete-before-runtime-teardown",
+                },
+            )
+        )
+        await asyncio.wait_for(db.menu_transition_reached.wait(), timeout=1)
+        assert db.state["status"] == "menu_tour"
+        assert match_id in web_server.ACTIVE_MATCHES
+
+        state_request = asyncio.create_task(
+            client.get(f"/api/battle/state?match_id={match_id}&user_id={USER_ID}")
+        )
+        await asyncio.sleep(0)
+        assert state_request.done() is False
+
+        db.release_completion.set()
+        completion_response, state_response = await asyncio.gather(
+            completion_task,
+            state_request,
+        )
+        state_body = await state_response.json()
+
+        assert completion_response.status == 200
+        assert state_response.status == 403
+        assert state_body["error"] == "onboarding_required"
+        assert state_body["onboarding"]["status"] == "menu_tour"
+        assert match_id not in web_server.ACTIVE_MATCHES
+        assert match_id not in client.app["active_matches"]
+    finally:
+        db.release_completion.set()
+        pending = [
+            task
+            for task in (completion_task, state_request)
+            if task is not None and not task.done()
+        ]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        await client.close()
+        web_server.ACTIVE_MATCHES.pop(match_id, None)
+        web_server.MATCH_LOCKS.pop(match_id, None)
+        web_server.ACTION_RESULT_CACHE.clear()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_concurrent_menu_step_retry_is_idempotent_and_tracks_one_event(monkeypatch):
+    match_id = f"tutorial-{USER_ID}"
+
+    class ConcurrentMenuDB(_TutorialRouteDB):
+        def __init__(self):
+            super().__init__({
+                "status": "menu_tour",
+                "current_step": "menu_tour",
+                "tutorial_step": TUTORIAL_FINAL_STEP,
+                "tutorial_match_id": match_id,
+                "menu_step": "reward",
+            })
+            self.first_event_started = asyncio.Event()
+            self.release_first_event = asyncio.Event()
+
+        async def track_onboarding_event(
+            self,
+            user_id,
+            event_name,
+            completed=False,
+            metadata=None,
+        ):
+            if (
+                event_name == "menu_tour_step_completed"
+                and not self.first_event_started.is_set()
+            ):
+                self.first_event_started.set()
+                await self.release_first_event.wait()
+            await super().track_onboarding_event(
+                user_id,
+                event_name,
+                completed,
+                metadata,
+            )
+
+    db = ConcurrentMenuDB()
+    client = await _onboarding_route_client(monkeypatch, db)
+    lock_key = web_server.tutorial_match_id_for_user(USER_ID)
+    try:
+        first = asyncio.create_task(
+            client.post(
+                f"/api/onboarding/menu-tour/step?user_id={USER_ID}",
+                json={"step_id": "reward"},
+            )
+        )
+        await asyncio.wait_for(db.first_event_started.wait(), timeout=1)
+        retry = asyncio.create_task(
+            client.post(
+                f"/api/onboarding/menu-tour/step?user_id={USER_ID}",
+                json={"step_id": "reward"},
+            )
+        )
+        await asyncio.sleep(0)
+        db.release_first_event.set()
+        first_response, retry_response = await asyncio.gather(first, retry)
+        first_body = await first_response.json()
+        retry_body = await retry_response.json()
+
+        assert first_response.status == retry_response.status == 200
+        assert first_body["success"] is retry_body["success"] is True
+        assert first_body["onboarding"]["menu_step"] == "arena"
+        assert retry_body["onboarding"]["menu_step"] == "arena"
+        assert db.state["menu_step"] == "arena"
+        assert [
+            event
+            for event in db.events
+            if event[1] == "menu_tour_step_completed"
+        ] == [
+            (
+                USER_ID,
+                "menu_tour_step_completed",
+                True,
+                {"step": "reward"},
+            )
+        ]
+    finally:
+        db.release_first_event.set()
+        await client.close()
+        web_server.MATCH_LOCKS.pop(lock_key, None)
 
 
 @pytest.mark.asyncio

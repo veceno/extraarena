@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
@@ -116,6 +117,23 @@ def _normalize_arguments(params: Any) -> tuple[str, dict[str, Any]]:
 
 
 def _validate_json_schema_subset(schema: dict[str, Any], value: Any, path: str = "arguments") -> None:
+    if "const" in schema and value != schema["const"]:
+        raise MCPToolInputError(f"{path}_const_mismatch")
+    variants = schema.get("oneOf")
+    if variants:
+        base_schema = dict(schema)
+        base_schema.pop("oneOf", None)
+        _validate_json_schema_subset(base_schema, value, path)
+        matches = 0
+        for variant in variants:
+            try:
+                _validate_json_schema_subset(variant, value, path)
+            except MCPToolInputError:
+                continue
+            matches += 1
+        if matches != 1:
+            raise MCPToolInputError(f"{path}_one_of_mismatch")
+        return
     schema_type = schema.get("type")
     if schema_type == "object":
         if not isinstance(value, dict):
@@ -178,6 +196,9 @@ def _validate_json_schema_subset(schema: dict[str, Any], value: Any, path: str =
             raise MCPToolInputError(f"{path}_too_short")
         if max_length is not None and len(value) > max_length:
             raise MCPToolInputError(f"{path}_too_long")
+        pattern = schema.get("pattern")
+        if pattern is not None and re.search(str(pattern), value) is None:
+            raise MCPToolInputError(f"{path}_pattern_mismatch")
         return
     if schema_type == "boolean" and not isinstance(value, bool):
         raise MCPToolInputError(f"{path}_must_be_boolean")
@@ -314,6 +335,111 @@ async def _reserve_idempotency(
     return reserved
 
 
+async def _lookup_idempotency(
+    app: web.Application,
+    *,
+    admin_user_id: int,
+    capability: AdminCapability,
+    arguments: dict[str, Any],
+    args_digest: str,
+) -> dict[str, Any] | None:
+    if not capability.idempotency_required:
+        return None
+    key = str(arguments.get("idempotency_key") or "").strip()
+    if not key:
+        raise MCPToolInputError("idempotency_key_required")
+    getter = getattr(app["db"], "get_mcp_idempotency_key", None)
+    if not getter:
+        raise MCPToolInputError("mcp_persistence_unavailable")
+    existing = await getter(
+        idempotency_key=key,
+        admin_user_id=admin_user_id,
+        tool_name=capability.id,
+    )
+    if isinstance(existing, dict):
+        existing_digest = existing.get("args_digest")
+        # Production rows always carry the digest; tolerate sparse test or
+        # alternate persistence projections without turning "busy" into a
+        # false conflict.
+        if existing_digest not in {None, ""} and str(existing_digest) != str(args_digest):
+            raise MCPToolInputError("idempotency_key_conflict")
+    return existing
+
+
+def _idempotency_outcome(record: dict[str, Any] | None) -> tuple[str, Any] | None:
+    if not isinstance(record, dict):
+        return None
+    status = str(record.get("status") or "").lower()
+    response: Any = None
+    response_present = False
+    for field in ("response", "response_summary"):
+        if field in record and record.get(field) is not None:
+            response = record.get(field)
+            response_present = True
+            break
+    if status in {"error", "failed", "rejected", "input_error"}:
+        error = str(record.get("error") or "").strip()
+        if not error and isinstance(response, dict):
+            error = str(response.get("error") or "").strip()
+        return ("input_error" if status in {"rejected", "input_error"} else "error", error or "tool_execution_failed")
+    if status in {"success", "replay"} or record.get("replayable"):
+        if response_present:
+            return "success", response
+    return "in_progress", None
+
+
+async def _release_idempotency(
+    app: web.Application,
+    *,
+    admin_user_id: int,
+    capability: AdminCapability,
+    arguments: dict[str, Any],
+    args_digest: str,
+    error: str,
+) -> None:
+    if not capability.idempotency_required:
+        return
+    key = str(arguments.get("idempotency_key") or "").strip()
+    releaser = getattr(app["db"], "release_mcp_idempotency_key", None)
+    if key and releaser:
+        released = await releaser(
+            idempotency_key=key,
+            admin_user_id=admin_user_id,
+            tool_name=capability.id,
+            args_digest=args_digest,
+        )
+        if released is not None:
+            return
+        getter = getattr(app["db"], "get_mcp_idempotency_key", None)
+        remaining = (
+            await getter(
+                idempotency_key=key,
+                admin_user_id=admin_user_id,
+                tool_name=capability.id,
+            )
+            if getter
+            else None
+        )
+        if not isinstance(remaining, dict):
+            return
+        if str(remaining.get("status") or "") != "in_progress":
+            return
+        if str(remaining.get("args_digest") or "") != str(args_digest):
+            return
+    # Compatibility fallback for alternate persistence implementations: a
+    # deterministic terminal input error is replayable, never a 24h phantom
+    # in-progress reservation.
+    await _complete_idempotency(
+        app,
+        admin_user_id=admin_user_id,
+        capability=capability,
+        arguments=arguments,
+        status="input_error",
+        response={"error": error},
+        error=error,
+    )
+
+
 async def _complete_idempotency(
     app: web.Application,
     *,
@@ -350,6 +476,10 @@ async def _call_tool(
     name = ""
     arguments: dict[str, Any] = {}
     idempotency_reserved = False
+    capability: AdminCapability | None = None
+    admin_user_id = int(claims.get("admin_user_id") or 0)
+    jti = str(claims.get("jti") or "")
+    args_digest = ""
     try:
         name, arguments = _normalize_arguments(params)
         capability = get_admin_capability(name)
@@ -386,23 +516,25 @@ async def _call_tool(
 
         idempotency = None
         if capability.mutating and not dry_run:
-            idempotency = await _reserve_idempotency(
+            # Inspect terminal/in-flight state before consuming a one-shot
+            # confirmation. New calls consume confirmation before reserving,
+            # so an invalid token can never wedge the idempotency key.
+            idempotency = await _lookup_idempotency(
                 app,
                 admin_user_id=admin_user_id,
                 capability=capability,
                 arguments=arguments,
                 args_digest=args_digest,
-                jti=jti,
             )
-            if isinstance(idempotency, dict):
-                replay_response = idempotency.get("response") or idempotency.get("response_summary")
-                if (idempotency.get("replayable") or idempotency.get("status") == "replay") and replay_response is not None:
+            if idempotency is not None:
+                outcome, stored = _idempotency_outcome(idempotency) or ("in_progress", None)
+                if outcome == "success":
                     await _record_audit(
                         app,
                         admin_user_id=admin_user_id,
                         tool_name=name,
                         arguments=arguments,
-                        result=replay_response,
+                        result=stored,
                         status="replayed",
                         duration_ms=int((time.perf_counter() - start) * 1000),
                         jti=jti,
@@ -411,14 +543,18 @@ async def _call_tool(
                     return _jsonrpc_result(
                         request_id,
                         {
-                            "content": [{"type": "text", "text": _canonical_json(replay_response)}],
-                            "structuredContent": replay_response,
+                            "content": [{"type": "text", "text": _canonical_json(stored)}],
+                            "structuredContent": stored,
                             "isError": False,
                         },
                     )
-                if idempotency.get("reserved") is False:
-                    raise MCPToolInputError("idempotency_key_in_progress")
-                idempotency_reserved = bool(idempotency.get("reserved") is True)
+                if outcome in {"error", "input_error"}:
+                    return _jsonrpc_error(
+                        request_id,
+                        code=-32602 if outcome == "input_error" else -32000,
+                        message=str(stored),
+                    )
+                raise MCPToolInputError("idempotency_key_in_progress")
 
         if capability.dry_run_required and not dry_run:
             consumed_confirmation = await _consume_confirmation(
@@ -429,6 +565,48 @@ async def _call_tool(
                 confirmation_token=confirmation_token,
             )
             confirmation_id = consumed_confirmation.get("confirmation_id") if isinstance(consumed_confirmation, dict) else None
+
+        if capability.mutating and not dry_run:
+            idempotency = await _reserve_idempotency(
+                app,
+                admin_user_id=admin_user_id,
+                capability=capability,
+                arguments=arguments,
+                args_digest=args_digest,
+                jti=jti,
+            )
+            if isinstance(idempotency, dict):
+                if idempotency.get("reserved") is True:
+                    idempotency_reserved = True
+                else:
+                    outcome, stored = _idempotency_outcome(idempotency) or ("in_progress", None)
+                    if outcome == "success":
+                        await _record_audit(
+                            app,
+                            admin_user_id=admin_user_id,
+                            tool_name=name,
+                            arguments=arguments,
+                            result=stored,
+                            status="replayed",
+                            duration_ms=int((time.perf_counter() - start) * 1000),
+                            jti=jti,
+                            idempotency_key=arguments.get("idempotency_key"),
+                        )
+                        return _jsonrpc_result(
+                            request_id,
+                            {
+                                "content": [{"type": "text", "text": _canonical_json(stored)}],
+                                "structuredContent": stored,
+                                "isError": False,
+                            },
+                        )
+                    if outcome in {"error", "input_error"}:
+                        return _jsonrpc_error(
+                            request_id,
+                            code=-32602 if outcome == "input_error" else -32000,
+                            message=str(stored),
+                        )
+                    raise MCPToolInputError("idempotency_key_in_progress")
 
         result = await execute_admin_capability(
             app,
@@ -458,6 +636,7 @@ async def _call_tool(
                 status="success",
                 response=result,
             )
+            idempotency_reserved = False
         await _record_audit(
             app,
             admin_user_id=admin_user_id,
@@ -485,6 +664,47 @@ async def _call_tool(
     except KeyError:
         return _jsonrpc_error(request_id, code=-32601, message="tool_not_found")
     except MCPToolInputError as exc:
+        if idempotency_reserved and capability is not None:
+            try:
+                await _release_idempotency(
+                    app,
+                    admin_user_id=admin_user_id,
+                    capability=capability,
+                    arguments=arguments,
+                    args_digest=args_digest,
+                    error=exc.error,
+                )
+            except Exception:
+                # Best effort fallback: leave a deterministic terminal record
+                # if reservation deletion itself is unavailable.
+                try:
+                    await _complete_idempotency(
+                        app,
+                        admin_user_id=admin_user_id,
+                        capability=capability,
+                        arguments=arguments,
+                        status="input_error",
+                        response={"error": exc.error},
+                        error=exc.error,
+                    )
+                except Exception:
+                    pass
+            idempotency_reserved = False
+        if name and admin_user_id:
+            try:
+                await _record_audit(
+                    app,
+                    admin_user_id=admin_user_id,
+                    tool_name=name,
+                    arguments=arguments,
+                    status="rejected",
+                    error=exc.error,
+                    duration_ms=int((time.perf_counter() - start) * 1000),
+                    jti=jti,
+                    idempotency_key=arguments.get("idempotency_key"),
+                )
+            except Exception:
+                pass
         return _jsonrpc_error(request_id, code=-32602, message=exc.error)
     except Exception as exc:
         admin_user_id = int(claims.get("admin_user_id") or 0)
@@ -496,8 +716,10 @@ async def _call_tool(
                     capability=get_admin_capability(name),
                     arguments=arguments,
                     status="error",
+                    response={"error": "tool_execution_failed"},
                     error="tool_execution_failed",
                 )
+                idempotency_reserved = False
             except Exception:
                 pass
         if name and admin_user_id:

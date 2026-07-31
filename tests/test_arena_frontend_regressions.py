@@ -73,6 +73,16 @@ def test_arena_blocks_external_browser_launch_without_blocking_android_shell():
     assert "if (isArenaAndroidShell()) return false;" in unsupported_block
     assert "urlParams?.get('ea_platform') === 'android_app'" in unsupported_block
     assert "isArenaTelegramRuntime(tg)" in unsupported_block
+    assert "if (isArenaLocalDevBrowser()) return false;" in unsupported_block
+    assert "function isArenaLocalDevBrowser()" in source
+    assert "['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)" in source
+    assert "function isArenaLocalDevUserIdAuth(value)" in source
+    auth_url_block = source.split("function buildArenaAuthUrl(path)", 1)[1].split(
+        "function startArenaAnalytics",
+        1,
+    )[0]
+    assert "if (isArenaLocalDevUserIdAuth(authToken))" in auth_url_block
+    assert "user_id=${encodeURIComponent(authToken)}" in auth_url_block
     assert "typeof tg.initData === 'string' && tg.initData.length > 0" in source
     assert "tg.initDataUnsafe?.user" in source
     assert '.appendQueryParameter("ea_platform", "android_app")' in native

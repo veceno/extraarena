@@ -272,6 +272,30 @@ def test_admin_frontend_displays_partial_block_warnings():
     assert "sq-partial-warnings" in html
 
 
+def test_admin_frontend_exposes_resumable_android_release_management():
+    html = (ROOT / "extraShop" / "admin.html").read_text(encoding="utf-8")
+
+    assert 'data-nav="releases"' in html
+    assert 'id="releases-view"' in html
+    assert 'id="release-required-switch"' in html
+    assert 'id="release-progress-bar"' in html
+    assert "file.slice(androidReleaseState.offset,end)" in html
+    assert "'Upload-Offset':String(offset)" in html
+    assert "X-Android-Upload-Token" in html
+    assert "publishAndroidRelease" in html
+    assert "Type RETIRE '+versionCode" in html
+    assert "min_supported_version_code" in html
+    assert "AAB is staging/storage for an external console workflow only in V1" in html
+    assert "releaseUploadStatus" in html
+    assert "Connection interrupted · resuming" in html
+    assert "retryAttempt>4" in html
+    assert "resumable?'Resume upload':'Upload & verify'" in html
+    assert "RUSTORE LIVE '+versionCode" in html
+    assert "store_release_confirmed:rustore" in html
+    assert "channel==='direct'&&kind==='apk'" in html
+    assert "RuStore releases can be published here only after that exact version is live" in html
+
+
 def test_profile_admin_entry_bootstraps_cookie_session_without_auth_query():
     index = (ROOT / "webapp" / "index.html").read_text(encoding="utf-8")
 

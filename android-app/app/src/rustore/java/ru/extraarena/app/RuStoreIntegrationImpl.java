@@ -11,9 +11,12 @@ import java.util.Collections;
 
 import ru.rustore.sdk.appupdate.manager.RuStoreAppUpdateManager;
 import ru.rustore.sdk.appupdate.manager.factory.RuStoreAppUpdateManagerFactory;
+import ru.rustore.sdk.appupdate.listener.InstallStateUpdateListener;
 import ru.rustore.sdk.appupdate.model.AppUpdateInfo;
 import ru.rustore.sdk.appupdate.model.AppUpdateOptions;
 import ru.rustore.sdk.appupdate.model.AppUpdateType;
+import ru.rustore.sdk.appupdate.model.InstallState;
+import ru.rustore.sdk.appupdate.model.InstallStatus;
 import ru.rustore.sdk.appupdate.model.UpdateAvailability;
 import ru.rustore.sdk.pay.RuStorePayClient;
 import ru.rustore.sdk.pay.RuStorePayClientProvider;
@@ -39,17 +42,27 @@ final class RuStoreIntegrationImpl implements RuStoreIntegration {
     private final MainActivity activity;
     private RuStorePayClient payClient;
     private RuStoreAppUpdateManager appUpdateManager;
+    private final InstallStateUpdateListener installStateUpdateListener;
+    private boolean updateListenerRegistered;
+    private boolean updateRecoveryInProgress;
+    private boolean flexibleCompletionInProgress;
+    private boolean immediateFlowActive;
+    private boolean immediateFlowAccepted;
+    private Runnable requiredUpdateFallback;
+    private boolean destroyed;
     private boolean availabilityKnown = false;
     private boolean payAvailable = false;
 
     RuStoreIntegrationImpl(MainActivity activity) {
         this.activity = activity;
+        this.installStateUpdateListener = this::handleInstallState;
     }
 
     @Override
     public void onCreate(Bundle savedInstanceState, Intent intent) {
         ensurePayClient();
-        ensureAppUpdateManager();
+        RuStoreAppUpdateManager manager = ensureAppUpdateManager();
+        recoverPendingUpdate(manager);
         proceedPaymentIntent(intent);
         refreshPaymentAvailability();
     }
@@ -57,6 +70,31 @@ final class RuStoreIntegrationImpl implements RuStoreIntegration {
     @Override
     public void onNewIntent(Intent intent) {
         proceedPaymentIntent(intent);
+    }
+
+    @Override
+    public void onResume() {
+        if (destroyed) {
+            return;
+        }
+        // Keep listening while the Activity is alive. Pending work is recovered
+        // once in onCreate; a cancelled installer must not reopen in a loop.
+        registerUpdateListener(ensureAppUpdateManager());
+    }
+
+    @Override
+    public void destroy() {
+        destroyed = true;
+        RuStoreAppUpdateManager manager = appUpdateManager;
+        if (manager != null && updateListenerRegistered) {
+            try {
+                manager.unregisterListener(installStateUpdateListener);
+            } catch (Throwable error) {
+                Log.d(TAG, "RuStore update listener cleanup ignored", error);
+            }
+        }
+        updateListenerRegistered = false;
+        requiredUpdateFallback = null;
     }
 
     @Override
@@ -68,6 +106,11 @@ final class RuStoreIntegrationImpl implements RuStoreIntegration {
         }
         manager.getAppUpdateInfo()
                 .addOnSuccessListener(info -> {
+                    if (info != null && info.getInstallStatus() == InstallStatus.DOWNLOADED) {
+                        completeFlexibleUpdate(manager);
+                        runOnUi(continueFlow);
+                        return;
+                    }
                     if (isUpdateAvailable(info, AppUpdateType.FLEXIBLE)) {
                         manager.startUpdateFlow(info, updateOptions(AppUpdateType.FLEXIBLE))
                                 .addOnSuccessListener(result -> runOnUi(continueFlow))
@@ -81,26 +124,25 @@ final class RuStoreIntegrationImpl implements RuStoreIntegration {
 
     @Override
     public void startImmediateUpdate(Runnable fallback) {
+        requiredUpdateFallback = fallback;
+        if (immediateFlowActive || immediateFlowAccepted) {
+            return;
+        }
+        immediateFlowActive = true;
         RuStoreAppUpdateManager manager = ensureAppUpdateManager();
         if (manager == null) {
-            runOnUi(fallback);
+            failRequiredUpdateFlow();
             return;
         }
         manager.getAppUpdateInfo()
                 .addOnSuccessListener(info -> {
                     if (!isUpdateAvailable(info, AppUpdateType.IMMEDIATE)) {
-                        runOnUi(fallback);
+                        failRequiredUpdateFlow();
                         return;
                     }
-                    manager.startUpdateFlow(info, updateOptions(AppUpdateType.IMMEDIATE))
-                            .addOnSuccessListener(result -> {
-                                if (result == null || result != Activity.RESULT_OK) {
-                                    runOnUi(fallback);
-                                }
-                            })
-                            .addOnFailureListener(error -> runOnUi(fallback));
+                    startImmediateFlow(manager, info);
                 })
-                .addOnFailureListener(error -> runOnUi(fallback));
+                .addOnFailureListener(error -> failRequiredUpdateFlow());
     }
 
     @Override
@@ -160,15 +202,91 @@ final class RuStoreIntegrationImpl implements RuStoreIntegration {
 
     private RuStoreAppUpdateManager ensureAppUpdateManager() {
         if (appUpdateManager != null) {
+            registerUpdateListener(appUpdateManager);
             return appUpdateManager;
         }
         try {
             appUpdateManager = RuStoreAppUpdateManagerFactory.INSTANCE.create(activity);
+            registerUpdateListener(appUpdateManager);
             return appUpdateManager;
         } catch (Throwable error) {
             Log.w(TAG, "RuStore AppUpdate init failed", error);
             return null;
         }
+    }
+
+    private void registerUpdateListener(RuStoreAppUpdateManager manager) {
+        if (manager == null || updateListenerRegistered || destroyed) {
+            return;
+        }
+        try {
+            manager.registerListener(installStateUpdateListener);
+            updateListenerRegistered = true;
+        } catch (Throwable error) {
+            Log.w(TAG, "RuStore update listener registration failed", error);
+        }
+    }
+
+    private void handleInstallState(InstallState state) {
+        if (state == null || destroyed) {
+            return;
+        }
+        if (state.getInstallStatus() == InstallStatus.DOWNLOADED && !immediateFlowActive) {
+            if (requiredUpdateFallback == null && !immediateFlowAccepted) {
+                completeFlexibleUpdate(ensureAppUpdateManager());
+            }
+        } else if (state.getInstallStatus() == InstallStatus.FAILED
+                || state.getInstallStatus() == InstallStatus.DOWNLOAD_INTERRUPTED) {
+            Log.w(TAG, "RuStore update download failed with code " + state.getInstallErrorCode());
+            flexibleCompletionInProgress = false;
+            if (requiredUpdateFallback != null
+                    || immediateFlowActive
+                    || immediateFlowAccepted) {
+                failRequiredUpdateFlow();
+            }
+        }
+    }
+
+    private void recoverPendingUpdate(RuStoreAppUpdateManager manager) {
+        if (manager == null || destroyed || updateRecoveryInProgress) {
+            return;
+        }
+        updateRecoveryInProgress = true;
+        manager.getAppUpdateInfo()
+                .addOnSuccessListener(info -> {
+                    updateRecoveryInProgress = false;
+                    if (info != null && info.getInstallStatus() == InstallStatus.DOWNLOADED) {
+                        completeFlexibleUpdate(manager);
+                    } else if (info != null
+                            && info.getUpdateAvailability()
+                            == UpdateAvailability.DEVELOPER_TRIGGERED_UPDATE_IN_PROGRESS
+                            && info.isUpdateTypeAllowed(AppUpdateType.IMMEDIATE)) {
+                        // The Activity/process may have been recreated while the
+                        // mandatory RuStore UI was open. Resume the same immediate
+                        // flow; startImmediateUpdate will attach its fallback when
+                        // the server manifest confirms the mandatory floor.
+                        immediateFlowActive = true;
+                        startImmediateFlow(manager, info);
+                    }
+                    // DOWNLOADING/PENDING flows are recovered by the registered listener.
+                })
+                .addOnFailureListener(error -> {
+                    updateRecoveryInProgress = false;
+                    Log.d(TAG, "RuStore pending update recovery unavailable", error);
+                });
+    }
+
+    private void completeFlexibleUpdate(RuStoreAppUpdateManager manager) {
+        if (manager == null || destroyed || flexibleCompletionInProgress) {
+            return;
+        }
+        flexibleCompletionInProgress = true;
+        runOnUi(() -> manager.completeUpdate(updateOptions(AppUpdateType.FLEXIBLE))
+                .addOnSuccessListener(result -> Log.d(TAG, "RuStore update installation requested"))
+                .addOnFailureListener(error -> {
+                    flexibleCompletionInProgress = false;
+                    Log.w(TAG, "RuStore update installation failed", error);
+                }));
     }
 
     private void refreshPaymentAvailability() {
@@ -330,9 +448,41 @@ final class RuStoreIntegrationImpl implements RuStoreIntegration {
     }
 
     private boolean isUpdateAvailable(AppUpdateInfo info, int updateType) {
-        return info != null
-                && info.getUpdateAvailability() == UpdateAvailability.UPDATE_AVAILABLE
+        if (info == null) {
+            return false;
+        }
+        int availability = info.getUpdateAvailability();
+        return (availability == UpdateAvailability.UPDATE_AVAILABLE
+                || availability == UpdateAvailability.DEVELOPER_TRIGGERED_UPDATE_IN_PROGRESS)
                 && info.isUpdateTypeAllowed(updateType);
+    }
+
+    private void startImmediateFlow(
+            RuStoreAppUpdateManager manager,
+            AppUpdateInfo info
+    ) {
+        manager.startUpdateFlow(info, updateOptions(AppUpdateType.IMMEDIATE))
+                .addOnSuccessListener(result -> {
+                    immediateFlowActive = false;
+                    if (result != null && result == Activity.RESULT_OK) {
+                        // RESULT_OK means RuStore accepted control of the
+                        // immediate install. Keep the required fallback attached
+                        // so a later FAILED/INTERRUPTED state can surface retry UI.
+                        immediateFlowAccepted = true;
+                        return;
+                    }
+                    // Includes Activity.RESULT_CANCELED and malformed results.
+                    failRequiredUpdateFlow();
+                })
+                .addOnFailureListener(error -> failRequiredUpdateFlow());
+    }
+
+    private void failRequiredUpdateFlow() {
+        immediateFlowActive = false;
+        immediateFlowAccepted = false;
+        Runnable fallback = requiredUpdateFallback;
+        requiredUpdateFallback = null;
+        runOnUi(fallback);
     }
 
     private AppUpdateOptions updateOptions(int updateType) {

@@ -2298,6 +2298,10 @@ function isValidAttackTarget(targetId, isHero) {
 
 function buildArenaAuthUrl(path) {
   if (!authToken) return path;
+  if (isArenaLocalDevUserIdAuth(authToken)) {
+    const separator = path.includes('?') ? '&' : '?';
+    return `${path}${separator}user_id=${encodeURIComponent(authToken)}`;
+  }
   // The fetch bridge authenticates only same-origin /api/ requests. Never put
   // JWT or Telegram initData into a URL, including cross-origin URLs.
   return path;
@@ -3441,7 +3445,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       console.warn('[ARENA] Не удалось создать MAX-сессию:', error);
     }
   }
-  const hasTelegramInitData = !!(tg?.initData && String(tg.initData).trim());
+  const hasTelegramInitData = !!(
+    platform?.isTelegram?.()
+    && tg?.initData
+    && String(tg.initData).trim()
+  );
   const telegramAuth = hasTelegramInitData && !isStaleArenaTelegramInitDataToken(tg.initData)
     ? String(tg.initData)
     : null;
@@ -3545,11 +3553,20 @@ function isArenaTelegramRuntime(tg) {
   );
 }
 
+function isArenaLocalDevBrowser() {
+  return ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
+}
+
+function isArenaLocalDevUserIdAuth(value) {
+  return isArenaLocalDevBrowser() && /^[1-9]\d*$/.test(String(value || '').trim());
+}
+
 function isUnsupportedExternalArenaBrowser(urlParams, tg) {
   if (isArenaAndroidShell()) return false;
   if (urlParams?.get('ea_platform') === 'android_app') return false;
   if (window.ExtraArenaPlatform?.isMax?.()) return false;
-  if (isArenaTelegramRuntime(tg)) return false;
+  if (window.ExtraArenaPlatform?.isTelegram?.() && isArenaTelegramRuntime(tg)) return false;
+  if (isArenaLocalDevBrowser()) return false;
   return true;
 }
 

@@ -64,6 +64,7 @@ import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
@@ -100,7 +101,9 @@ public class MainActivity extends Activity {
     private static final int EA_ACCENT = Color.rgb(245, 146, 30);
     private static final int EA_PINK = Color.rgb(244, 114, 182);
     private static final int EA_SURFACE = Color.rgb(26, 16, 48);
-    private static final long UPDATE_GATE_CACHE_MS = 10 * 60 * 1000L;
+    private static final long UPDATE_GATE_CACHE_MS = 60 * 1000L;
+    private static final String KEY_UPDATE_MANIFEST_CACHE = "mobile_update_manifest_v2";
+    private static final String KEY_UPDATE_FLOOR_CACHE = "mobile_update_required_floor_v2";
     private static final long NOTIFICATION_PROMPT_COOLDOWN_MS = 3L * 24L * 60L * 60L * 1000L;
     private static final String NOTIFICATION_PROMPT_PREFS = "extraarena_notification_prompt";
     private static final String KEY_NOTIFICATION_PROMPT_ACCEPTED = "accepted";
@@ -135,10 +138,33 @@ public class MainActivity extends Activity {
         TELEGRAM_PASSWORD
     }
 
+    private static final class WebAuthContext {
+        final long generation;
+        final String profileId;
+        final String profileName;
+        final String baseUrl;
+        final boolean whitelistEnabled;
+        final String whitelistCode;
+
+        WebAuthContext(
+                long generation,
+                ConnectionProfileStore.ConnectionProfile profile
+        ) {
+            this.generation = generation;
+            this.profileId = profile.id;
+            this.profileName = profile.name;
+            this.baseUrl = BaseUrlStore.normalize(profile.baseUrl);
+            this.whitelistEnabled = profile.whitelistEnabled;
+            this.whitelistCode = whitelistEnabled ? profile.whitelistCode : "";
+        }
+    }
+
     private FrameLayout root;
     private WebView webView;
     private View loadingView;
     private View loadingDevHotspot;
+    private TextView loadingStatusLabel;
+    private ProgressBar loadingProgressIndicator;
     private View errorView;
     private View authView;
     private EditText authEmail;
@@ -179,16 +205,26 @@ public class MainActivity extends Activity {
     private boolean loadingPausedForProfileSwitcher = false;
     private boolean arenaLoadBlockedByConnectivity = false;
     private int arenaLoadGeneration = 0;
+    private volatile long authContextGeneration = 0L;
+    private volatile WebAuthContext activeWebAuthContext;
     private int updateGateGeneration = 0;
     private long updateGatePassedAt = 0L;
     private boolean updateBlocked = false;
     private Dialog updateDialog;
+    private boolean updateDialogRequired;
     private Dialog notificationPromptDialog;
     private Dialog extraIdManagerDialog;
     private Dialog addExtraIdDialog;
     private Dialog badConnectionDialog;
     private Dialog nativeAfkDialog;
     private MobileUpdateInfo blockedUpdateInfo;
+    private ApkUpdateInstaller apkUpdateInstaller;
+    private NativeMenuMusic nativeMenuMusic;
+    private ProgressBar updateProgressBar;
+    private TextView updateProgressLabel;
+    private TextView updateInstallAction;
+    private ApkUpdateInstaller.State updateInstallerState = ApkUpdateInstaller.State.IDLE;
+    private boolean optionalUpdatePrompted;
     private String lastFinishedUrl = "";
     private RuStoreIntegration ruStoreIntegration;
     private boolean rustoreOptionalUpdateChecked = false;
@@ -204,6 +240,10 @@ public class MainActivity extends Activity {
         loadTypefaces();
         buildUi();
         configureWebView();
+        nativeMenuMusic = new NativeMenuMusic(this);
+        nativeMenuMusic.setScene("menu");
+        nativeMenuMusic.onResume();
+        apkUpdateInstaller = ApkUpdateInstallerFactory.create(this);
         ruStoreIntegration = RuStoreIntegrationFactory.create(this);
         ruStoreIntegration.onCreate(savedInstanceState, getIntent());
         fetchFcmToken();
@@ -248,12 +288,18 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        if (nativeMenuMusic != null) {
+            nativeMenuMusic.onPause();
+        }
         pauseWebContent();
         super.onPause();
     }
 
     @Override
     protected void onStop() {
+        if (nativeMenuMusic != null) {
+            nativeMenuMusic.onPause();
+        }
         pauseWebContent();
         super.onStop();
     }
@@ -261,6 +307,15 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (nativeMenuMusic != null) {
+            nativeMenuMusic.onResume();
+        }
+        if (apkUpdateInstaller != null) {
+            apkUpdateInstaller.onResume();
+        }
+        if (ruStoreIntegration != null) {
+            ruStoreIntegration.onResume();
+        }
         resumeWebContent();
         if (updateBlocked) {
             showRequiredUpdateDialog(blockedUpdateInfo);
@@ -270,6 +325,15 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         arenaProbeExecutor.shutdownNow();
+        if (apkUpdateInstaller != null) {
+            apkUpdateInstaller.destroy();
+        }
+        if (nativeMenuMusic != null) {
+            nativeMenuMusic.release();
+        }
+        if (ruStoreIntegration != null) {
+            ruStoreIntegration.destroy();
+        }
         destroyWebContent();
         super.onDestroy();
     }
@@ -484,7 +548,7 @@ public class MainActivity extends Activity {
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         // Installed before the first navigation so the bundled webapp can read the
         // Keystore-backed token without ever placing it in a URL.
-        webView.addJavascriptInterface(new AndroidBridge(), "ExtraArenaApp");
+        rotateWebAuthContext();
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
@@ -572,6 +636,10 @@ public class MainActivity extends Activity {
 
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                setNativeLoadingStatus("Загружаем игру");
+                if (nativeMenuMusic != null) {
+                    nativeMenuMusic.setScene(isArenaUrl(url) ? "arena" : "menu");
+                }
                 if (!loadingPausedForProfileSwitcher && url != null && !"about:blank".equals(url)) {
                     arenaLoadBlockedByConnectivity = false;
                 }
@@ -593,6 +661,9 @@ public class MainActivity extends Activity {
                 errorView.setVisibility(View.GONE);
                 injectAppContext();
                 injectHapticsBridge();
+                if (nativeMenuMusic != null) {
+                    nativeMenuMusic.setScene(isArenaUrl(url) ? "arena" : "menu");
+                }
                 captureAuthTokenFromWebSession();
                 maybeShowNotificationOptInPrompt();
                 String previousUrl = lastFinishedUrl;
@@ -640,6 +711,43 @@ public class MainActivity extends Activity {
         });
     }
 
+    private WebAuthContext rotateWebAuthContext() {
+        ConnectionProfileStore.ConnectionProfile profile =
+                ConnectionProfileStore.getSelectedProfile(this);
+        WebAuthContext next = new WebAuthContext(++authContextGeneration, profile);
+        activeWebAuthContext = next;
+        if (webView != null) {
+            try {
+                webView.removeJavascriptInterface("ExtraArenaApp");
+            } catch (Exception ignored) {
+            }
+            webView.addJavascriptInterface(new AndroidBridge(next), "ExtraArenaApp");
+        }
+        return next;
+    }
+
+    private WebAuthContext snapshotWebAuthContext() {
+        WebAuthContext current = activeWebAuthContext;
+        return current == null ? rotateWebAuthContext() : current;
+    }
+
+    private boolean isWebAuthContextCurrent(WebAuthContext expected) {
+        if (expected == null) {
+            return false;
+        }
+        WebAuthContext current = activeWebAuthContext;
+        if (current == null
+                || current.generation != expected.generation
+                || !current.profileId.equals(expected.profileId)
+                || !current.baseUrl.equals(expected.baseUrl)) {
+            return false;
+        }
+        ConnectionProfileStore.ConnectionProfile selected =
+                ConnectionProfileStore.getSelectedProfile(this);
+        return selected.id.equals(expected.profileId)
+                && BaseUrlStore.normalize(selected.baseUrl).equals(expected.baseUrl);
+    }
+
     private WebResourceResponse interceptExtraArenaRequest(Uri uri) {
         if (uri == null) {
             return null;
@@ -673,6 +781,9 @@ public class MainActivity extends Activity {
         }
         if (path.startsWith("/DesignAssets/")) {
             return servePackagedDesignAsset(path);
+        }
+        if (path.startsWith("/assets/audio/") && !path.contains("..")) {
+            return servePackagedAsset(path.replaceFirst("^/+", ""));
         }
         return servePackagedWebappAsset(webappAssetForPath(path));
     }
@@ -711,16 +822,9 @@ public class MainActivity extends Activity {
         if ("arena".equals(clean)) {
             clean = "arena.html";
         }
-        if ("index.html".equals(clean)
-                || "arena.html".equals(clean)
-                || "analytics-v2.js".equals(clean)
-                || "arena.js".equals(clean)
-                || "arena-styles.css".equals(clean)
-                || "main.js".equals(clean)
-                || "styles.css".equals(clean)
-                || "safe-area.js".equals(clean)
-                || "matchmaking-tips.config.js".equals(clean)
-                || "index.compiled.js".equals(clean)) {
+        if (!"extraid-mockup.html".equals(clean)
+                && (clean.matches("[A-Za-z0-9._-]+\\.(?:html|js|css)")
+                || "analytics-v2.js".equals(clean))) {
             return "ea_webapp/" + clean;
         }
         return null;
@@ -752,13 +856,18 @@ public class MainActivity extends Activity {
         if (cardId == null || !cardId.matches("\\d+")) {
             return null;
         }
-        WebResourceResponse response = servePackagedAsset("DesignAssets/Cards/" + cardId + ".png");
+        String variant = uri.getQueryParameter("variant");
+        if ("preview".equalsIgnoreCase(variant)) {
+            WebResourceResponse preview = servePackagedAsset("DesignAssets/CardsPreview/w384/" + cardId + ".webp");
+            if (preview != null) return preview;
+        }
+        WebResourceResponse response = servePackagedAsset("DesignAssets/Cards/" + cardId + ".webp");
+        if (response != null) return response;
+        response = servePackagedAsset("DesignAssets/Cards/" + cardId + ".png");
         if (response != null) return response;
         response = servePackagedAsset("DesignAssets/Cards/" + cardId + ".jpg");
         if (response != null) return response;
         response = servePackagedAsset("DesignAssets/Cards/" + cardId + ".jpeg");
-        if (response != null) return response;
-        response = servePackagedAsset("DesignAssets/Cards/" + cardId + ".webp");
         if (response != null) return response;
         return null;
     }
@@ -872,6 +981,7 @@ public class MainActivity extends Activity {
         if (lower.endsWith(".gif")) return "image/gif";
         if (lower.endsWith(".svg")) return "image/svg+xml";
         if (lower.endsWith(".mp3")) return "audio/mpeg";
+        if (lower.endsWith(".ogg")) return "audio/ogg";
         if (lower.endsWith(".wav")) return "audio/wav";
         if (lower.endsWith(".ttf")) return "font/ttf";
         if (lower.endsWith(".otf")) return "font/otf";
@@ -995,11 +1105,8 @@ public class MainActivity extends Activity {
         }
         String type = intent.getStringExtra("type");
         if ("app_update_required".equals(type) || "app_update".equals(type)) {
-            String url = intent.getStringExtra("url");
-            if (url == null || url.trim().isEmpty()) {
-                url = isRuStoreBuild() ? BuildConfig.RUSTORE_APP_URL : BuildConfig.UPDATE_CHANNEL_URL;
-            }
-            openExternal(url);
+            updateGatePassedAt = 0L;
+            optionalUpdatePrompted = false;
         }
     }
 
@@ -1038,9 +1145,20 @@ public class MainActivity extends Activity {
                 if (generation != updateGateGeneration) {
                     return;
                 }
+                if (info.policyUnavailable) {
+                    updateBlocked = true;
+                    blockedUpdateInfo = info;
+                    showRequiredUpdateDialog(info);
+                    return;
+                }
                 if (info.required) {
                     updateBlocked = true;
                     blockedUpdateInfo = info;
+                    if (updateDialog != null && updateDialog.isShowing() && !updateDialogRequired) {
+                        // A push or refreshed manifest may raise the floor while an
+                        // optional prompt is open. Replace it before entering gameplay.
+                        updateDialog.dismiss();
+                    }
                     if (isRuStoreBuild() && ruStoreIntegration != null) {
                         ruStoreIntegration.startImmediateUpdate(() -> showRequiredUpdateDialog(info));
                     } else {
@@ -1048,13 +1166,29 @@ public class MainActivity extends Activity {
                     }
                     return;
                 }
-                updateGatePassedAt = System.currentTimeMillis();
-                loadArena(intent);
+                if (info.updateAvailable && !optionalUpdatePrompted) {
+                    optionalUpdatePrompted = true;
+                    showOptionalUpdateDialog(info, () -> continueAfterUpdateGate(intent));
+                    return;
+                }
+                continueAfterUpdateGate(intent);
             });
         });
     }
 
+    private void continueAfterUpdateGate(Intent intent) {
+        if (updateBlocked) {
+            showRequiredUpdateDialog(blockedUpdateInfo);
+            return;
+        }
+        updateGatePassedAt = System.currentTimeMillis();
+        loadArena(intent);
+    }
+
     private void showUpdateGateLoading() {
+        if (nativeMenuMusic != null) {
+            nativeMenuMusic.setScene("menu");
+        }
         loadingPausedForProfileSwitcher = false;
         arenaLoadBlockedByConnectivity = false;
         if (webView != null) {
@@ -1073,15 +1207,114 @@ public class MainActivity extends Activity {
         if (loadingView != null) {
             loadingView.setVisibility(View.VISIBLE);
         }
+        setNativeLoadingStatus("Проверяем версию");
         setLoadingDevHotspotVisible(false);
     }
 
     private MobileUpdateInfo fetchMobileUpdateInfo() {
+        ConnectionProfileStore.ConnectionProfile selectedProfile =
+                ConnectionProfileStore.getSelectedProfile(this);
+        // Both official entrypoints are release-policy authorities. Always probe
+        // both so a Worldwide outage cannot hide a mandatory floor already live
+        // on RU (and vice versa).
+        MobileUpdateInfo worldwide = fetchMobileUpdateInfoFrom(
+                BuildConfig.DEFAULT_BASE_URL
+        );
+        MobileUpdateInfo ru = BaseUrlStore.normalize(BuildConfig.RU_BASE_URL).equals(
+                BaseUrlStore.normalize(BuildConfig.DEFAULT_BASE_URL)
+        ) ? worldwide : fetchMobileUpdateInfoFrom(BuildConfig.RU_BASE_URL);
+        MobileUpdateInfo cached = readCachedMobileUpdateInfo();
+        MobileUpdateInfo live = MobileUpdateInfo.merge(worldwide, ru);
+        if (live != null) {
+            MobileUpdateInfo effective = applyCachedUpdateFloor(live, cached);
+            // Cache the merged, normalized authority result. Caching each response in
+            // fetch order can replace a newer regional APK with an older canonical one.
+            if (effective.hasUsableTarget()) {
+                SecurePrefs.putString(this, KEY_UPDATE_MANIFEST_CACHE, effective.toCacheJson());
+            }
+            return effective;
+        }
+
+        MobileUpdateInfo cachedEffective = cached == null
+                ? null
+                : applyCachedUpdateFloor(cached, null);
+        if (cachedEffective != null && cachedEffective.required) {
+            // A known mandatory floor remains mandatory while offline.
+            return cachedEffective;
+        }
+        if (isDebugLoopbackProfile(selectedProfile)) {
+            // Explicit local-emulator escape hatch for a blank development DB.
+            // It cannot exist in a release build or on a remote custom host.
+            return applyCachedUpdateFloor(MobileUpdateInfo.notRequired(), cachedEffective);
+        }
+        // A stale optional/no-update cache cannot prove that no newer mandatory
+        // floor was published. Production therefore fails closed until at least
+        // one official authority answers successfully.
+        return MobileUpdateInfo.policyUnavailable(cachedEffective);
+    }
+
+    private boolean isDebugLoopbackProfile(
+            ConnectionProfileStore.ConnectionProfile profile
+    ) {
+        if (!BuildConfig.DEBUG
+                || profile == null
+                || ConnectionProfileStore.isBuiltIn(profile.id)) {
+            return false;
+        }
+        try {
+            Uri uri = Uri.parse(BaseUrlStore.normalize(profile.baseUrl));
+            String host = uri.getHost();
+            return "http".equalsIgnoreCase(uri.getScheme())
+                    && ("10.0.2.2".equals(host)
+                    || "127.0.0.1".equals(host)
+                    || "localhost".equalsIgnoreCase(host)
+                    || "::1".equals(host));
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private MobileUpdateInfo readCachedMobileUpdateInfo() {
+        String cached = SecurePrefs.getString(this, KEY_UPDATE_MANIFEST_CACHE, "");
+        if (cached.isEmpty()) {
+            return null;
+        }
+        try {
+            return MobileUpdateInfo.from(new JSONObject(cached), BuildConfig.DEFAULT_BASE_URL);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private MobileUpdateInfo applyCachedUpdateFloor(
+            MobileUpdateInfo info,
+            MobileUpdateInfo cachedCandidate
+    ) {
+        int cachedFloor = BuildConfig.VERSION_CODE;
+        try {
+            cachedFloor = Integer.parseInt(
+                    SecurePrefs.getString(this, KEY_UPDATE_FLOOR_CACHE, String.valueOf(BuildConfig.VERSION_CODE))
+            );
+        } catch (Exception ignored) {
+        }
+        int effectiveFloor = Math.max(cachedFloor, info.minSupportedVersionCode);
+        SecurePrefs.putString(this, KEY_UPDATE_FLOOR_CACHE, String.valueOf(effectiveFloor));
+        MobileUpdateInfo effective = info.withMinSupported(effectiveFloor);
+        if (!effective.hasUsableTarget()
+                && cachedCandidate != null
+                && cachedCandidate.latestVersionCode >= effectiveFloor) {
+            return cachedCandidate.withMinSupported(effectiveFloor);
+        }
+        return effective;
+    }
+
+    private MobileUpdateInfo fetchMobileUpdateInfoFrom(String baseUrl) {
         HttpURLConnection connection = null;
         try {
-            Uri uri = Uri.parse(BaseUrlStore.join(BuildConfig.DEFAULT_BASE_URL, BuildConfig.APP_VERSION_PATH))
+            Uri uri = Uri.parse(BaseUrlStore.join(baseUrl, BuildConfig.APP_VERSION_PATH))
                     .buildUpon()
                     .appendQueryParameter("platform", "android")
+                    .appendQueryParameter("channel", BuildConfig.DISTRIBUTION_CHANNEL)
                     .appendQueryParameter("version_code", String.valueOf(BuildConfig.VERSION_CODE))
                     .appendQueryParameter("version_name", BuildConfig.VERSION_NAME)
                     .build();
@@ -1096,13 +1329,22 @@ public class MainActivity extends Activity {
             connection.setRequestProperty("User-Agent", "ExtraArenaApp/" + BuildConfig.VERSION_NAME);
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
-                return MobileUpdateInfo.notRequired();
+                return null;
             }
             String raw = readStream(connection.getInputStream());
             JSONObject data = new JSONObject(raw);
-            return MobileUpdateInfo.from(data);
+            if (!data.has("latest_version_code")
+                    || !data.has("min_supported_version_code")) {
+                return null;
+            }
+            int latestCode = data.optInt("latest_version_code", -1);
+            int minimumCode = data.optInt("min_supported_version_code", -1);
+            if (latestCode <= 0 || minimumCode < 0 || minimumCode > latestCode) {
+                return null;
+            }
+            return MobileUpdateInfo.from(data, baseUrl);
         } catch (Exception ignored) {
-            return MobileUpdateInfo.notRequired();
+            return null;
         } finally {
             if (connection != null) {
                 connection.disconnect();
@@ -1127,15 +1369,25 @@ public class MainActivity extends Activity {
         MobileUpdateInfo updateInfo = info == null ? MobileUpdateInfo.requiredFallback() : info;
         blockedUpdateInfo = updateInfo;
         showUpdateGateLoading();
+        showUpdateDialog(updateInfo, true, null);
+    }
 
+    private void showOptionalUpdateDialog(MobileUpdateInfo info, Runnable continueFlow) {
+        showUpdateGateLoading();
+        showUpdateDialog(info, false, continueFlow);
+    }
+
+    private void showUpdateDialog(MobileUpdateInfo updateInfo, boolean required, Runnable continueFlow) {
         if (updateDialog != null && updateDialog.isShowing()) {
             return;
         }
 
         Dialog dialog = new Dialog(this);
         updateDialog = dialog;
-        dialog.setCancelable(false);
-        dialog.setCanceledOnTouchOutside(false);
+        updateDialogRequired = required;
+        dialog.setCancelable(!required);
+        dialog.setCanceledOnTouchOutside(!required);
+        boolean[] continued = {false};
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(false);
@@ -1150,22 +1402,55 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT
         ));
 
-        TextView title = createDialogTitle("Нужно обновиться");
+        boolean policyUnavailable = updateInfo.policyUnavailable;
+        TextView title = createDialogTitle(
+                policyUnavailable
+                        ? "Не удалось проверить обновления"
+                        : required ? "Нужно обновиться" : "На арене — новое"
+        );
         panel.addView(title);
 
         String latestLabel = updateInfo.latestVersionName.isEmpty()
                 ? "последнюю версию"
                 : "версию " + updateInfo.latestVersionName;
+        String policyText = policyUnavailable
+                ? " Вход временно приостановлен: без ответа сервера нельзя безопасно проверить обязательную версию."
+                : required
+                ? " Подключение к серверам заблокировано, пока обновление не будет установлено."
+                : " Можно обновиться сейчас или продолжить игру.";
+        String sizeLabel = updateInfo.sizeBytes > 0L ? " · " + formatUpdateBytes(updateInfo.sizeBytes) : "";
         TextView subtitle = createDialogSubtitle(
-                "Установлен клиент " + BuildConfig.VERSION_NAME + ". Доступна " + latestLabel
-                        + ". Подключение к серверам заблокировано до обновления."
+                "Сейчас " + BuildConfig.VERSION_NAME + ", доступна " + latestLabel + sizeLabel + "." + policyText
         );
         panel.addView(subtitle);
 
         TextView message = createDialogSubtitle(updateInfo.message);
         panel.addView(message);
 
-        if (isRuStoreBuild()) {
+        updateProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        updateProgressBar.setMax(100);
+        updateProgressBar.setProgress(0);
+        updateProgressBar.setIndeterminate(false);
+        updateProgressBar.setProgressTintList(android.content.res.ColorStateList.valueOf(EA_ACCENT));
+        updateProgressBar.setProgressBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.rgb(61, 42, 112)));
+        updateProgressBar.setVisibility(View.GONE);
+        LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(8)
+        );
+        progressParams.topMargin = dp(14);
+        panel.addView(updateProgressBar, progressParams);
+
+        updateProgressLabel = createDialogSubtitle("");
+        updateProgressLabel.setVisibility(View.GONE);
+        panel.addView(updateProgressLabel);
+
+        if (policyUnavailable) {
+            TextView unavailable = createLinkLabel(
+                    "Проверь интернет и повтори попытку. Если сеть работает, один из серверов обновлений временно недоступен."
+            );
+            panel.addView(unavailable, inputParams());
+        } else if (isRuStoreBuild()) {
             TextView rustoreLink = createLinkLabel("rustore.ru/catalog/app/ru.extraarena.app");
             panel.addView(rustoreLink, inputParams());
 
@@ -1178,41 +1463,76 @@ public class MainActivity extends Activity {
             rustoreParams.topMargin = dp(14);
             panel.addView(rustore, rustoreParams);
         } else {
-            TextView channelLink = createLinkLabel("t.me/extraarenamobile");
-            panel.addView(channelLink, inputParams());
+            if (updateInfo.hasUsableTarget()) {
+                TextView integrity = createLinkLabel("Файл, SHA-256, подпись и версия проверяются до установки");
+                panel.addView(integrity, inputParams());
 
-            TextView apkLink = createLinkLabel("apk.laveqox.ru");
-            panel.addView(apkLink, inputParams());
+                updateInstallAction = createDialogButton("Скачать и установить", true);
+                updateInstallAction.setOnClickListener(v -> {
+                    if (updateInstallerState == ApkUpdateInstaller.State.DOWNLOADING) {
+                        apkUpdateInstaller.cancel();
+                        return;
+                    }
+                    startDirectApkUpdate(updateInfo);
+                });
+                LinearLayout.LayoutParams apkParams = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                );
+                apkParams.topMargin = dp(14);
+                panel.addView(updateInstallAction, apkParams);
+            } else {
+                TextView unavailable = createLinkLabel(
+                        "Не удалось получить APK, который снимает обязательное ограничение. "
+                                + "Проверьте сеть и повторите проверку."
+                );
+                panel.addView(unavailable, inputParams());
+            }
 
-            TextView apk = createDialogButton("Скачать APK", true);
-            apk.setOnClickListener(v -> openExternal(updateInfo.apkUrl));
-            LinearLayout.LayoutParams apkParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-            );
-            apkParams.topMargin = dp(14);
-            panel.addView(apk, apkParams);
-
-            TextView channel = createDialogButton("Telegram канал", false);
+            TextView channel = createDialogButton("Новости обновлений", false);
             channel.setOnClickListener(v -> openExternal(updateInfo.telegramUrl));
             panel.addView(channel, inputParams());
         }
 
-        TextView retry = createDialogButton("Проверить снова", false);
-        retry.setOnClickListener(v -> {
-            dialog.dismiss();
-            updateDialog = null;
-            updateBlocked = false;
-            blockedUpdateInfo = null;
-            updateGatePassedAt = 0L;
-            launchAfterUpdateGate(getIntent());
-        });
-        panel.addView(retry, inputParams());
+        if (required) {
+            TextView retry = createDialogButton("Проверить установленную версию", false);
+            retry.setOnClickListener(v -> {
+                dialog.dismiss();
+                updateDialog = null;
+                updateBlocked = false;
+                blockedUpdateInfo = null;
+                updateGatePassedAt = 0L;
+                launchAfterUpdateGate(getIntent());
+            });
+            panel.addView(retry, inputParams());
+        } else {
+            TextView later = createDialogButton("Не сейчас", false);
+            later.setOnClickListener(v -> {
+                cancelOptionalUpdateWork();
+                continued[0] = true;
+                dialog.dismiss();
+                if (continueFlow != null) {
+                    continueFlow.run();
+                }
+            });
+            panel.addView(later, inputParams());
+        }
 
         dialog.setContentView(scroll);
         dialog.setOnDismissListener(d -> {
             if (updateDialog == dialog) {
                 updateDialog = null;
+                updateDialogRequired = false;
+            }
+            updateProgressBar = null;
+            updateProgressLabel = null;
+            updateInstallAction = null;
+            if (!required && !continued[0]) {
+                cancelOptionalUpdateWork();
+                continued[0] = true;
+                if (continueFlow != null) {
+                    continueFlow.run();
+                }
             }
         });
         Window window = dialog.getWindow();
@@ -1232,7 +1552,79 @@ public class MainActivity extends Activity {
         dialog.show();
     }
 
+    private void cancelOptionalUpdateWork() {
+        if (apkUpdateInstaller != null && updateInstallerState != ApkUpdateInstaller.State.IDLE) {
+            // Back, outside-tap and the explicit "later" action have identical
+            // semantics: no download or installer may surface after game entry.
+            apkUpdateInstaller.cancel();
+        }
+    }
+
+    private void startDirectApkUpdate(MobileUpdateInfo info) {
+        if (apkUpdateInstaller == null || !apkUpdateInstaller.isSupported()) {
+            updateApkUi(ApkUpdateInstaller.State.ERROR, 0, 0L, info.sizeBytes, "Нативная установка недоступна в этой сборке");
+            return;
+        }
+        updateInstallerState = ApkUpdateInstaller.State.IDLE;
+        apkUpdateInstaller.start(info.toApkRelease(), (state, progress, downloaded, total, message) ->
+                runOnUiThread(() -> updateApkUi(state, progress, downloaded, total, message))
+        );
+    }
+
+    private void updateApkUi(
+            ApkUpdateInstaller.State state,
+            int progress,
+            long downloaded,
+            long total,
+            String message
+    ) {
+        updateInstallerState = state;
+        if (updateProgressBar != null) {
+            boolean visible = state != ApkUpdateInstaller.State.IDLE && state != ApkUpdateInstaller.State.ERROR;
+            updateProgressBar.setVisibility(visible ? View.VISIBLE : View.GONE);
+            updateProgressBar.setProgress(Math.max(0, Math.min(100, progress)));
+        }
+        if (updateProgressLabel != null) {
+            String bytes = downloaded > 0L && total > 0L
+                    ? " " + formatUpdateBytes(downloaded) + " / " + formatUpdateBytes(total)
+                    : "";
+            updateProgressLabel.setText((message == null ? "" : message) + bytes);
+            updateProgressLabel.setVisibility(View.VISIBLE);
+        }
+        if (updateInstallAction == null) {
+            return;
+        }
+        updateInstallAction.setEnabled(state != ApkUpdateInstaller.State.VERIFYING);
+        if (state == ApkUpdateInstaller.State.DOWNLOADING) {
+            updateInstallAction.setText("Отменить загрузку · " + Math.max(0, Math.min(100, progress)) + "%");
+        } else if (state == ApkUpdateInstaller.State.VERIFYING) {
+            updateInstallAction.setText("Проверяем APK…");
+        } else if (state == ApkUpdateInstaller.State.PERMISSION_REQUIRED) {
+            updateInstallAction.setText("Открыть разрешение установки");
+        } else if (state == ApkUpdateInstaller.State.INSTALLING || state == ApkUpdateInstaller.State.READY) {
+            updateInstallAction.setText("Открыть установщик Android");
+        } else if (state == ApkUpdateInstaller.State.ERROR) {
+            updateInstallAction.setText("Повторить загрузку");
+        } else {
+            updateInstallAction.setText("Скачать и установить");
+        }
+    }
+
+    private String formatUpdateBytes(long bytes) {
+        if (bytes <= 0L) {
+            return "0 МБ";
+        }
+        double megabytes = bytes / (1024.0 * 1024.0);
+        if (megabytes >= 10.0) {
+            return String.format(Locale.ROOT, "%.0f МБ", megabytes);
+        }
+        return String.format(Locale.ROOT, "%.1f МБ", megabytes);
+    }
+
     private void loadArena(Intent intent) {
+        if (nativeMenuMusic != null) {
+            nativeMenuMusic.setScene("menu");
+        }
         if (DeviceRegistrar.getAuthToken(this).isEmpty()) {
             showAuth();
             return;
@@ -1246,6 +1638,7 @@ public class MainActivity extends Activity {
         loadingPausedForProfileSwitcher = false;
         authView.setVisibility(View.GONE);
         loadingView.setVisibility(View.VISIBLE);
+        setNativeLoadingStatus("Подключаемся к арене");
         setLoadingDevHotspotVisible(true);
         errorView.setVisibility(View.GONE);
         String section = intent == null ? null : intent.getStringExtra("section");
@@ -1401,6 +1794,7 @@ public class MainActivity extends Activity {
             String entrypoint,
             Intent sourceIntent
     ) {
+        setNativeLoadingStatus("Проверяем сервер");
         final int generation = ++arenaLoadGeneration;
         if (generation != arenaLoadGeneration || loadingPausedForProfileSwitcher) {
             return;
@@ -1432,8 +1826,12 @@ public class MainActivity extends Activity {
                     if (finalSwitchedTo != null) {
                         // Persist the fallback selection under the generation guard so a manual
                         // profile choice made during the probe window is not silently overwritten.
-                        ConnectionProfileStore.selectProfile(this, finalSwitchedTo);
+                        selectConnectionProfile(finalSelected);
                         Log.w(TAG, "Selected host unreachable; fell back to profile " + finalSwitchedTo);
+                        if (DeviceRegistrar.getAuthToken(this).isEmpty()) {
+                            showAuth();
+                            return;
+                        }
                     }
                     String launchUrl = buildLaunchUrl(
                             section,
@@ -1564,12 +1962,27 @@ public class MainActivity extends Activity {
     }
 
     private void captureAuthTokenFromWebSession() {
+        WebAuthContext expected = snapshotWebAuthContext();
         webView.evaluateJavascript(
                 "(function(){try{return sessionStorage.getItem('extra_id_token')||'';}catch(e){return '';}})()",
                 value -> {
+                    if (!isWebAuthContextCurrent(expected)) {
+                        Log.w(TAG, "Ignoring stale WebView auth-token callback after profile/auth switch");
+                        return;
+                    }
                     String token = stripJsString(value);
                     if (!token.isEmpty()) {
-                        DeviceRegistrar.saveAuthToken(this, token);
+                        DeviceRegistrar.saveAuthToken(
+                                this,
+                                expected.baseUrl,
+                                expected.whitelistCode,
+                                token
+                        );
+                        ExtraIdAccountStore.touchAccountByToken(
+                                this,
+                                expected.baseUrl,
+                                token
+                        );
                     }
                 }
         );
@@ -1633,7 +2046,10 @@ public class MainActivity extends Activity {
         TextView title = createDialogTitle("Профили подключения");
         panel.addView(title);
 
-        TextView subtitle = createDialogSubtitle("Выбери сервер или добавь отдельный профиль для разработки.");
+        TextView subtitle = createDialogSubtitle(
+                "Выбери сервер или добавь отдельный профиль для разработки. "
+                        + "Данные входа отправляются выбранному серверу — используй только адрес, которому доверяешь."
+        );
         panel.addView(subtitle);
 
         ConnectionProfileStore.ConnectionProfile selected = ConnectionProfileStore.getSelectedProfile(this);
@@ -1705,7 +2121,7 @@ public class MainActivity extends Activity {
                     code
             );
             ConnectionProfileStore.saveProfile(this, profile);
-            ConnectionProfileStore.selectProfile(this, profile.id);
+            selectConnectionProfile(profile);
             Toast.makeText(this, "Профиль подключен", Toast.LENGTH_SHORT).show();
             profileChanged[0] = true;
             dialog.dismiss();
@@ -1749,8 +2165,30 @@ public class MainActivity extends Activity {
         loadingPausedForProfileSwitcher = false;
         webView.clearCache(true);
         webView.clearHistory();
-        DeviceRegistrar.clearAuthToken(this);
+        resetWebViewForNewAuthSession();
         launchAfterUpdateGate(getIntent());
+    }
+
+    private boolean selectConnectionProfile(
+            ConnectionProfileStore.ConnectionProfile profile
+    ) {
+        if (profile == null) {
+            return false;
+        }
+        ConnectionProfileStore.ConnectionProfile previous =
+                ConnectionProfileStore.getSelectedProfile(this);
+        if (previous.id.equals(profile.id)
+                && BaseUrlStore.normalize(previous.baseUrl).equals(
+                BaseUrlStore.normalize(profile.baseUrl)
+        )) {
+            return false;
+        }
+        // Capture both endpoints/tokens before changing the selected profile.
+        // The queued unregister can therefore only target the old backend.
+        DeviceRegistrar.syncProfileTransition(this, previous, profile);
+        ConnectionProfileStore.selectProfile(this, profile.id);
+        rotateWebAuthContext();
+        return true;
     }
 
     private void setLoadingDevHotspotVisible(boolean visible) {
@@ -1770,7 +2208,7 @@ public class MainActivity extends Activity {
         card.setPadding(dp(14), dp(12), dp(14), dp(12));
         card.setBackground(makeProfileBackground(selected));
         card.setOnClickListener(v -> {
-            ConnectionProfileStore.selectProfile(this, profile.id);
+            selectConnectionProfile(profile);
             Toast.makeText(this, "Подключено: " + profile.name, Toast.LENGTH_SHORT).show();
             profileChanged[0] = true;
             dialog.dismiss();
@@ -1929,11 +2367,25 @@ public class MainActivity extends Activity {
 
     private FrameLayout createShellScreen() {
         FrameLayout screen = new FrameLayout(this);
+        applyNativeSystemBarInsets(screen);
         screen.addView(new ShellBackgroundView(this), new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
         ));
         return screen;
+    }
+
+    private void applyNativeSystemBarInsets(FrameLayout screen) {
+        screen.setOnApplyWindowInsetsListener((view, insets) -> {
+            view.setPadding(
+                    insets.getSystemWindowInsetLeft(),
+                    insets.getSystemWindowInsetTop(),
+                    insets.getSystemWindowInsetRight(),
+                    insets.getSystemWindowInsetBottom()
+            );
+            return insets;
+        });
+        screen.requestApplyInsets();
     }
 
     private View createTopbar(String label, String action) {
@@ -2089,7 +2541,7 @@ public class MainActivity extends Activity {
 
     private View createAuthView() {
         FrameLayout screen = createShellScreen();
-        screen.addView(createTopbar("ExtraArena", null));
+        View topbar = createTopbar("ExtraArena", null);
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
@@ -2264,6 +2716,7 @@ public class MainActivity extends Activity {
         bottomPanel.addView(authLegalNotice, inputParams());
 
         updateAuthStep(AuthStep.WELCOME);
+        screen.addView(topbar);
         return screen;
     }
 
@@ -2367,6 +2820,7 @@ public class MainActivity extends Activity {
 
     private void handleTopbarAction() {
         if (authStep == AuthStep.WELCOME) {
+            showServerSwitcher();
             return;
         }
         if (authStep == AuthStep.TELEGRAM_CODE) {
@@ -2445,9 +2899,12 @@ public class MainActivity extends Activity {
         LinearLayout track = new LinearLayout(this);
         track.setOrientation(LinearLayout.HORIZONTAL);
         track.setPadding(dp(16), 0, dp(16), 0);
-        String[] cards = {"card-1.png", "3.png", "10.png", "14.png", "17.png", "21.png", "31.png", "card-40.png"};
+        String[] cards = {"1.webp", "3.webp", "10.webp", "14.webp", "17.webp", "21.webp", "31.webp", "40.webp"};
         for (int i = 0; i < cards.length; i++) {
-            ImageView card = createAssetImage("extra_mobile/" + cards[i], ImageView.ScaleType.CENTER_CROP);
+            ImageView card = createAssetImage(
+                    "DesignAssets/CardsPreview/w384/" + cards[i],
+                    ImageView.ScaleType.CENTER_CROP
+            );
             card.setRotation(i % 2 == 0 ? -5f : 4f);
             card.setTranslationY(dp(i % 2 == 0 ? 12 : 2));
             card.setElevation(dp(8));
@@ -2586,7 +3043,7 @@ public class MainActivity extends Activity {
         authLegalNotice.setVisibility(step == AuthStep.WELCOME ? View.VISIBLE : View.GONE);
 
         if (step == AuthStep.WELCOME) {
-            setTopbar("ExtraArena", null);
+            setTopbar("ExtraArena", "Сервер");
             authKicker.setText("Карточная арена");
             authTitle.setText("Залетай\nв бой");
             authSubtitle.setText("Собери отряд, разыграй карты и переиграй соперника за пару ходов.");
@@ -2737,6 +3194,9 @@ public class MainActivity extends Activity {
     }
 
     private void showAuth() {
+        if (nativeMenuMusic != null) {
+            nativeMenuMusic.setScene("menu");
+        }
         webView.setVisibility(View.INVISIBLE);
         loadingView.setVisibility(View.GONE);
         setLoadingDevHotspotVisible(false);
@@ -2850,8 +3310,62 @@ public class MainActivity extends Activity {
         if (!ensureNetworkForAuth()) {
             return;
         }
-        setAuthLoading(true);
-        AuthClient.startAnonymous(this, nickname, authCallback(false));
+        setAuthLoading(true, "Готовим игровой профиль...");
+        WebAuthContext expectedAuthContext = snapshotWebAuthContext();
+        AuthClient.startAnonymousBootstrap(
+                this,
+                nickname,
+                new AuthClient.BootstrapCallback() {
+                    @Override
+                    public void onSuccess(AuthClient.AuthResult anonymousResult) {
+                        runOnUiThread(() -> {
+                            if (!isWebAuthContextCurrent(expectedAuthContext)) {
+                                Log.w(TAG, "Ignoring stale anonymous bootstrap success");
+                                return;
+                            }
+                            completeAnonymousBootstrap(anonymousResult);
+                        });
+                    }
+
+                    @Override
+                    public void onError(String errorCode, String message) {
+                        runOnUiThread(() -> {
+                            if (!isWebAuthContextCurrent(expectedAuthContext)) {
+                                Log.w(TAG, "Ignoring stale anonymous bootstrap error");
+                                return;
+                            }
+                            setAuthLoading(false);
+                            if ("bootstrap_upgraded".equals(errorCode)) {
+                                updateAuthStep(AuthStep.LOGIN_EMAIL);
+                                showAuthError(
+                                        "Этот игровой профиль уже защищён ExtraID. "
+                                                + "Войди с email или выбери сохранённый аккаунт."
+                                );
+                                return;
+                            }
+                            showAuthError(
+                                    "Не удалось начать игру. "
+                                            + message
+                                            + " Повтори попытку — профиль не задублируется."
+                            );
+                        });
+                    }
+                }
+        );
+    }
+
+    private void completeAnonymousBootstrap(AuthClient.AuthResult anonymousResult) {
+        if (!AuthClient.saveAnonymousBootstrapAuth(this, anonymousResult)) {
+            setAuthLoading(false);
+            showAuthError(
+                    "Не удалось безопасно сохранить игровой профиль. Повтори попытку."
+            );
+            return;
+        }
+        setAuthLoading(false);
+        hideSoftKeyboardAndClearAuthFocus();
+        resetWebViewForNewAuthSession();
+        launchAfterUpdateGate(getIntent());
     }
 
     private void submitTelegramId() {
@@ -2945,18 +3459,98 @@ public class MainActivity extends Activity {
         }
         setAuthLoading(true);
         if (authStep == AuthStep.REGISTER_PASSWORD) {
-            AuthClient.register(this, stagedEmail, password, "", authCallback(true));
+            registerExtraIdWithGameSession(password);
         } else {
             AuthClient.login(this, stagedEmail, password, authCallback(true));
         }
     }
 
+    private void registerExtraIdWithGameSession(String password) {
+        WebAuthContext expectedAuthContext = snapshotWebAuthContext();
+        String activeToken = DeviceRegistrar.getAuthToken(this);
+        if (!activeToken.isEmpty()) {
+            setAuthLoading(true, "Создаём ExtraID...");
+            AuthClient.register(
+                    this,
+                    stagedEmail,
+                    password,
+                    "",
+                    activeToken,
+                    authCallback(true)
+            );
+            return;
+        }
+
+        setAuthLoading(true, "Готовим игровую сессию...");
+        AuthClient.startAnonymousBootstrap(this, new AuthClient.BootstrapCallback() {
+            @Override
+            public void onSuccess(AuthClient.AuthResult anonymousResult) {
+                runOnUiThread(() -> {
+                    if (!isWebAuthContextCurrent(expectedAuthContext)) {
+                        Log.w(TAG, "Ignoring stale registration bootstrap success");
+                        return;
+                    }
+                    if (!AuthClient.saveAnonymousBootstrapAuth(
+                            MainActivity.this,
+                            anonymousResult
+                    )) {
+                        setAuthLoading(false);
+                        showAuthError(
+                                "Не удалось безопасно сохранить игровую сессию. "
+                                        + "Повтори создание аккаунта."
+                        );
+                        return;
+                    }
+                    setAuthLoading(true, "Привязываем ExtraID...");
+                    AuthClient.register(
+                            MainActivity.this,
+                            stagedEmail,
+                            password,
+                            "",
+                            anonymousResult.token,
+                            authCallback(true)
+                    );
+                });
+            }
+
+            @Override
+            public void onError(String errorCode, String message) {
+                runOnUiThread(() -> {
+                    if (!isWebAuthContextCurrent(expectedAuthContext)) {
+                        Log.w(TAG, "Ignoring stale registration bootstrap error");
+                        return;
+                    }
+                    setAuthLoading(false);
+                    if ("bootstrap_upgraded".equals(errorCode)) {
+                        updateAuthStep(AuthStep.LOGIN_EMAIL);
+                        authEmail.setText(stagedEmail);
+                        showAuthError(
+                                "Эта игровая сессия уже защищена ExtraID. "
+                                        + "Войди с email или выбери сохранённый аккаунт."
+                        );
+                        return;
+                    }
+                    showAuthError(
+                            "Не удалось подготовить игровую сессию. "
+                                    + message
+                                    + " Повтори создание аккаунта — прогресс не задублируется."
+                    );
+                });
+            }
+        });
+    }
+
     private AuthClient.Callback authCallback(boolean rememberExtraId) {
         String emailForAccount = stagedEmail;
+        WebAuthContext expectedAuthContext = snapshotWebAuthContext();
         return new AuthClient.Callback() {
             @Override
             public void onSuccess(AuthClient.AuthResult result) {
                 runOnUiThread(() -> {
+                    if (!isWebAuthContextCurrent(expectedAuthContext)) {
+                        Log.w(TAG, "Ignoring stale native auth success after profile/auth switch");
+                        return;
+                    }
                     setAuthLoading(false);
                     hideSoftKeyboardAndClearAuthFocus();
                     if (result.emailVerificationRequired) {
@@ -2964,12 +3558,12 @@ public class MainActivity extends Activity {
                         authEmail.setText(emailForAccount);
                         showEmailVerificationPending(
                                 emailForAccount,
-                                result.emailSent
+                                result.emailSent,
+                                result.emailQueued
                         );
                         return;
                     }
-                    resetWebViewForNewAuthSession();
-                    if (!persistNativeAuthToken(result.token)) {
+                    if (!persistNativeAuthToken(result.token, expectedAuthContext)) {
                         return;
                     }
                     if (rememberExtraId) {
@@ -2977,12 +3571,13 @@ public class MainActivity extends Activity {
                                 MainActivity.this,
                                 emailForAccount,
                                 result,
-                                BaseUrlStore.getBaseUrl(MainActivity.this)
+                                expectedAuthContext.baseUrl
                         );
                     }
                     if (result.regBonus) {
                         Toast.makeText(MainActivity.this, "Бонус: +3 ключа", Toast.LENGTH_SHORT).show();
                     }
+                    resetWebViewForNewAuthSession();
                     launchAfterUpdateGate(getIntent());
                 });
             }
@@ -2990,6 +3585,10 @@ public class MainActivity extends Activity {
             @Override
             public void onError(String message) {
                 runOnUiThread(() -> {
+                    if (!isWebAuthContextCurrent(expectedAuthContext)) {
+                        Log.w(TAG, "Ignoring stale native auth error after profile/auth switch");
+                        return;
+                    }
                     setAuthLoading(false);
                     showAuthError(message);
                 });
@@ -2998,15 +3597,34 @@ public class MainActivity extends Activity {
     }
 
     private boolean persistNativeAuthToken(String token) {
+        return persistNativeAuthToken(token, snapshotWebAuthContext());
+    }
+
+    private boolean persistNativeAuthToken(
+            String token,
+            WebAuthContext expectedAuthContext
+    ) {
+        if (!isWebAuthContextCurrent(expectedAuthContext)) {
+            return false;
+        }
         if (token == null || token.trim().isEmpty() || "null".equals(token)) {
             showAuthError("Сервер не вернул токен входа. Попробуй еще раз.");
             return false;
         }
-        if (!DeviceRegistrar.saveAuthToken(this, token)) {
+        if (!DeviceRegistrar.saveAuthToken(
+                this,
+                expectedAuthContext.baseUrl,
+                expectedAuthContext.whitelistCode,
+                token
+        )) {
             showAuthError("Не удалось сохранить вход на устройстве. Попробуй еще раз.");
             return false;
         }
-        if (DeviceRegistrar.getAuthToken(this).isEmpty()) {
+        if (DeviceRegistrar.getAuthToken(
+                this,
+                expectedAuthContext.baseUrl,
+                expectedAuthContext.whitelistCode
+        ).isEmpty()) {
             showAuthError("Не удалось прочитать сохраненный вход. Попробуй еще раз.");
             return false;
         }
@@ -3022,11 +3640,22 @@ public class MainActivity extends Activity {
     }
 
     private void setAuthLoading(boolean loading) {
+        setAuthLoading(loading, "Подключаемся...");
+    }
+
+    private void setAuthLoading(boolean loading, String loadingLabel) {
         authAction.setEnabled(!loading);
         authSecondaryAction.setEnabled(!loading);
         authTelegramAction.setEnabled(!loading);
         authModeSwitch.setEnabled(!loading);
-        authAction.setText(loading ? "Подключаемся..." : actionTextForStep(authStep));
+        if (topbarAction != null) {
+            topbarAction.setEnabled(!loading);
+            topbarAction.setAlpha(loading ? 0.55f : 1f);
+        }
+        String cleanLoadingLabel = loadingLabel == null || loadingLabel.trim().isEmpty()
+                ? "Подключаемся..."
+                : loadingLabel.trim();
+        authAction.setText(loading ? cleanLoadingLabel : actionTextForStep(authStep));
         authAction.setAlpha(loading ? 0.7f : 1f);
         authSecondaryAction.setAlpha(loading ? 0.55f : 1f);
         authTelegramAction.setAlpha(loading ? 0.55f : 1f);
@@ -3059,7 +3688,7 @@ public class MainActivity extends Activity {
 
     private View createLoadingView() {
         FrameLayout screen = createShellScreen();
-        screen.addView(createTopbar("Клиент", null));
+        View topbar = createTopbar("Клиент", null);
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
@@ -3135,6 +3764,7 @@ public class MainActivity extends Activity {
 
         layout.addView(createLoadingProgress());
 
+        screen.addView(topbar);
         return screen;
     }
 
@@ -3153,37 +3783,28 @@ public class MainActivity extends Activity {
         left.setLetterSpacing(0.04f);
         top.addView(left, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        TextView right = new TextView(this);
-        right.setText("72%");
-        right.setTextColor(Color.argb(199, 240, 236, 255));
-        right.setTextSize(13);
-        right.setTypeface(futuraExtraBold);
-        top.addView(right);
+        loadingStatusLabel = new TextView(this);
+        loadingStatusLabel.setText("Проверяем версию");
+        loadingStatusLabel.setTextColor(Color.argb(199, 240, 236, 255));
+        loadingStatusLabel.setTextSize(13);
+        loadingStatusLabel.setTypeface(futuraExtraBold);
+        top.addView(loadingStatusLabel);
         box.addView(top);
 
-        FrameLayout bar = new FrameLayout(this);
-        bar.setPadding(dp(3), dp(3), dp(3), dp(3));
-        bar.setBackground(makeProgressTrackBackground());
+        loadingProgressIndicator = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        loadingProgressIndicator.setIndeterminate(true);
+        loadingProgressIndicator.setIndeterminateTintList(
+                android.content.res.ColorStateList.valueOf(EA_ACCENT)
+        );
+        loadingProgressIndicator.setProgressBackgroundTintList(
+                android.content.res.ColorStateList.valueOf(Color.rgb(61, 42, 112))
+        );
         LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dp(16)
         );
         barParams.topMargin = dp(12);
-        box.addView(bar, barParams);
-
-        View fill = new View(this);
-        fill.setBackground(makeProgressFillBackground());
-        FrameLayout.LayoutParams fillParams = new FrameLayout.LayoutParams(
-                0,
-                ViewGroup.LayoutParams.MATCH_PARENT
-        );
-        bar.addView(fill, fillParams);
-        bar.post(() -> {
-            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) fill.getLayoutParams();
-            int available = Math.max(0, bar.getWidth() - bar.getPaddingLeft() - bar.getPaddingRight());
-            params.width = Math.round(available * 0.72f);
-            fill.setLayoutParams(params);
-        });
+        box.addView(loadingProgressIndicator, barParams);
 
         TextView tips = new TextView(this);
         tips.setText("Совет: держи добивку до конца хода — иногда одна карта решает всю партию.");
@@ -3204,9 +3825,15 @@ public class MainActivity extends Activity {
         return box;
     }
 
+    private void setNativeLoadingStatus(String status) {
+        if (loadingStatusLabel != null) {
+            loadingStatusLabel.setText(status == null || status.trim().isEmpty() ? "Загрузка" : status.trim());
+        }
+    }
+
     private View createErrorView() {
         FrameLayout screen = createShellScreen();
-        screen.addView(createTopbar("Клиент", null));
+        View topbar = createTopbar("Клиент", null);
 
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
@@ -3279,6 +3906,7 @@ public class MainActivity extends Activity {
         hintParams.topMargin = dp(10);
         layout.addView(hint, hintParams);
 
+        screen.addView(topbar);
         return screen;
     }
 
@@ -3932,26 +4560,39 @@ public class MainActivity extends Activity {
             String submitText,
             TextView error
     ) {
+        WebAuthContext expectedAuthContext = snapshotWebAuthContext();
         return new AuthClient.Callback() {
             @Override
             public void onSuccess(AuthClient.AuthResult result) {
                 runOnUiThread(() -> {
+                    if (!isWebAuthContextCurrent(expectedAuthContext)) {
+                        Log.w(TAG, "Ignoring stale ExtraID dialog success after profile/auth switch");
+                        return;
+                    }
                     submit.setEnabled(true);
                     submit.setAlpha(1f);
                     submit.setText(submitText);
                     if (result.emailVerificationRequired) {
                         dialog.dismiss();
-                        showEmailVerificationPending(email, result.emailSent);
+                        showEmailVerificationPending(
+                                email,
+                                result.emailSent,
+                                result.emailQueued
+                        );
                         return;
                     }
-                    if (!saveNativeAuthTokenForDialog(result.token, error)) {
+                    if (!saveNativeAuthTokenForDialog(
+                            result.token,
+                            error,
+                            expectedAuthContext
+                    )) {
                         return;
                     }
                     ExtraIdAccountStore.saveAccount(
                             MainActivity.this,
                             email,
                             result,
-                            BaseUrlStore.getBaseUrl(MainActivity.this)
+                            expectedAuthContext.baseUrl
                     );
                     if (extraIdManagerDialog != null) {
                         extraIdManagerDialog.dismiss();
@@ -3965,6 +4606,10 @@ public class MainActivity extends Activity {
             @Override
             public void onError(String message) {
                 runOnUiThread(() -> {
+                    if (!isWebAuthContextCurrent(expectedAuthContext)) {
+                        Log.w(TAG, "Ignoring stale ExtraID dialog error after profile/auth switch");
+                        return;
+                    }
                     submit.setEnabled(true);
                     submit.setAlpha(1f);
                     submit.setText(submitText);
@@ -3974,16 +4619,32 @@ public class MainActivity extends Activity {
         };
     }
 
-    private boolean saveNativeAuthTokenForDialog(String token, TextView error) {
+    private boolean saveNativeAuthTokenForDialog(
+            String token,
+            TextView error,
+            WebAuthContext expectedAuthContext
+    ) {
+        if (!isWebAuthContextCurrent(expectedAuthContext)) {
+            return false;
+        }
         if (token == null || token.trim().isEmpty() || "null".equals(token)) {
             showDialogError(error, "Сервер не вернул токен входа. Попробуй еще раз.");
             return false;
         }
-        if (!DeviceRegistrar.saveAuthToken(this, token)) {
+        if (!DeviceRegistrar.saveAuthToken(
+                this,
+                expectedAuthContext.baseUrl,
+                expectedAuthContext.whitelistCode,
+                token
+        )) {
             showDialogError(error, "Не удалось сохранить вход на устройстве. Попробуй еще раз.");
             return false;
         }
-        if (DeviceRegistrar.getAuthToken(this).isEmpty()) {
+        if (DeviceRegistrar.getAuthToken(
+                this,
+                expectedAuthContext.baseUrl,
+                expectedAuthContext.whitelistCode
+        ).isEmpty()) {
             showDialogError(error, "Не удалось прочитать сохраненный вход. Попробуй еще раз.");
             return false;
         }
@@ -4011,11 +4672,19 @@ public class MainActivity extends Activity {
         return password != null && password.getBytes(StandardCharsets.UTF_8).length > 72;
     }
 
-    private void showEmailVerificationPending(String email, boolean emailSent) {
+    private void showEmailVerificationPending(
+            String email,
+            boolean emailSent,
+            boolean emailQueued
+    ) {
         String cleanEmail = email == null ? "" : email.trim();
         String message = emailSent
                 ? "Мы отправили 6-значный код на " + cleanEmail
                         + ". Введи его ниже в течение 15 минут. "
+                        + "Текущая игра и прогресс на этом устройстве сохранены."
+                : emailQueued
+                ? "Email изменён на " + cleanEmail
+                        + ". Готовим новый код — письмо придёт автоматически. "
                         + "Текущая игра и прогресс на этом устройстве сохранены."
                 : "Email " + cleanEmail
                         + " ещё не подтверждён. Нажми «Новый код», затем введи 6 цифр из письма. "
@@ -4033,7 +4702,7 @@ public class MainActivity extends Activity {
                 .setMessage(message)
                 .setView(codeInput)
                 .setPositiveButton("Подтвердить", null);
-        if (!cleanEmail.isEmpty()) {
+        if (!cleanEmail.isEmpty() && !emailQueued) {
             builder.setNegativeButton("Новый код", null);
         }
         if (!DeviceRegistrar.getAuthToken(this).isEmpty()) {
@@ -4167,10 +4836,10 @@ public class MainActivity extends Activity {
                                     dialog.dismiss();
                                     Toast.makeText(
                                             MainActivity.this,
-                                            "Email изменён, новый код отправлен",
+                                            "Email изменён, готовим новый код",
                                             Toast.LENGTH_LONG
                                     ).show();
-                                    showEmailVerificationPending(newEmail, true);
+                                    showEmailVerificationPending(newEmail, false, true);
                                 });
                             }
 
@@ -5006,76 +5675,270 @@ public class MainActivity extends Activity {
     }
 
     private static final class MobileUpdateInfo {
+        final boolean updateAvailable;
         final boolean required;
         final int latestVersionCode;
+        final int minSupportedVersionCode;
         final String latestVersionName;
         final String message;
         final String telegramUrl;
         final String apkUrl;
         final String rustoreUrl;
+        final String releaseId;
+        final long sizeBytes;
+        final String sha256;
+        final String packageName;
+        final String signingCertSha256;
+        final boolean policyUnavailable;
 
         private MobileUpdateInfo(
+                boolean updateAvailable,
                 boolean required,
                 int latestVersionCode,
+                int minSupportedVersionCode,
                 String latestVersionName,
                 String message,
                 String telegramUrl,
                 String apkUrl,
-                String rustoreUrl
+                String rustoreUrl,
+                String releaseId,
+                long sizeBytes,
+                String sha256,
+                String packageName,
+                String signingCertSha256
         ) {
-            this.required = required;
-            this.latestVersionCode = latestVersionCode;
-            this.latestVersionName = latestVersionName == null ? "" : latestVersionName.trim();
-            this.message = message == null || message.trim().isEmpty()
-                    ? "Хорошие новости! Вышло обновление, скачай новую версию, чтобы продолжить игру."
-                    : message.trim();
-            this.telegramUrl = normalizeUrl(telegramUrl, BuildConfig.UPDATE_CHANNEL_URL);
-            this.apkUrl = normalizeUrl(apkUrl, BuildConfig.UPDATE_APK_URL);
-            this.rustoreUrl = normalizeUrl(rustoreUrl, BuildConfig.RUSTORE_APP_URL);
+            this(
+                    updateAvailable,
+                    required,
+                    latestVersionCode,
+                    minSupportedVersionCode,
+                    latestVersionName,
+                    message,
+                    telegramUrl,
+                    apkUrl,
+                    rustoreUrl,
+                    releaseId,
+                    sizeBytes,
+                    sha256,
+                    packageName,
+                    signingCertSha256,
+                    false
+            );
         }
 
-        static MobileUpdateInfo from(JSONObject data) {
+        private MobileUpdateInfo(
+                boolean updateAvailable,
+                boolean required,
+                int latestVersionCode,
+                int minSupportedVersionCode,
+                String latestVersionName,
+                String message,
+                String telegramUrl,
+                String apkUrl,
+                String rustoreUrl,
+                String releaseId,
+                long sizeBytes,
+                String sha256,
+                String packageName,
+                String signingCertSha256,
+                boolean policyUnavailable
+        ) {
+            this.updateAvailable = updateAvailable;
+            this.required = required;
+            this.latestVersionCode = latestVersionCode;
+            this.minSupportedVersionCode = minSupportedVersionCode;
+            this.latestVersionName = latestVersionName == null ? "" : latestVersionName.trim();
+            this.message = message == null || message.trim().isEmpty()
+                    ? required
+                    ? "Это обновление обязательно: оно сохраняет совместимость клиента с текущей игрой."
+                    : "Вышла свежая версия ExtraArena с последними изменениями игры."
+                    : message.trim();
+            this.telegramUrl = normalizeUrl(telegramUrl, BuildConfig.UPDATE_CHANNEL_URL);
+            this.apkUrl = normalizeDownloadUrl(apkUrl, BuildConfig.DEFAULT_BASE_URL, BuildConfig.UPDATE_APK_URL);
+            this.rustoreUrl = normalizeUrl(rustoreUrl, BuildConfig.RUSTORE_APP_URL);
+            this.releaseId = releaseId == null ? "" : releaseId.trim();
+            this.sizeBytes = Math.max(0L, sizeBytes);
+            this.sha256 = sha256 == null ? "" : sha256.trim();
+            this.packageName = packageName == null || packageName.trim().isEmpty()
+                    ? BuildConfig.APPLICATION_ID
+                    : packageName.trim();
+            this.signingCertSha256 = signingCertSha256 == null ? "" : signingCertSha256.trim();
+            this.policyUnavailable = policyUnavailable;
+        }
+
+        static MobileUpdateInfo from(JSONObject data, String manifestBaseUrl) {
+            JSONObject release = data.optJSONObject("release");
+            if (release == null) {
+                release = data;
+            }
+            JSONObject artifact = data.optJSONObject("artifact");
+            if (artifact == null) {
+                artifact = release.optJSONObject("artifact");
+            }
+            if (artifact == null) {
+                artifact = new JSONObject();
+            }
             int latestCode = data.optInt("latest_version_code", BuildConfig.VERSION_CODE);
             int minCode = data.optInt("min_supported_version_code", latestCode);
-            boolean required = data.optBoolean(
-                    "required",
-                    data.optBoolean("update_required", BuildConfig.VERSION_CODE < Math.max(latestCode, minCode))
+            boolean required = BuildConfig.VERSION_CODE < minCode;
+            boolean available = required
+                    || BuildConfig.VERSION_CODE < latestCode
+                    || data.optBoolean("update_available", false);
+            String rawApkUrl = artifact.optString(
+                    "download_path",
+                    artifact.optString(
+                            "download_url",
+                            data.optString("apk_url", BuildConfig.UPDATE_APK_URL)
+                    )
             );
-            if (BuildConfig.VERSION_CODE < Math.max(latestCode, minCode)) {
-                required = true;
-            }
             return new MobileUpdateInfo(
+                    available,
                     required,
                     latestCode,
-                    data.optString("latest_version_name", ""),
-                    data.optString("message", ""),
+                    minCode,
+                    data.optString("latest_version_name", release.optString("version_name", "")),
+                    data.optString(
+                            "release_notes",
+                            release.optString("notes", data.optString("message", ""))
+                    ),
                     data.optString("telegram_url", data.optString("update_url", BuildConfig.UPDATE_CHANNEL_URL)),
-                    data.optString("apk_url", BuildConfig.UPDATE_APK_URL),
-                    data.optString("rustore_url", data.optString("rustore_app_url", BuildConfig.RUSTORE_APP_URL))
+                    normalizeDownloadUrl(rawApkUrl, manifestBaseUrl, BuildConfig.UPDATE_APK_URL),
+                    data.optString("rustore_url", data.optString("rustore_app_url", BuildConfig.RUSTORE_APP_URL)),
+                    data.optString("release_id", release.optString("id", "")),
+                    artifact.optLong("size_bytes", data.optLong("apk_size_bytes", 0L)),
+                    artifact.optString("sha256", data.optString("apk_sha256", "")),
+                    data.optString("package_name", artifact.optString("package_name", BuildConfig.APPLICATION_ID)),
+                    artifact.optString("signing_cert_sha256", data.optString("signing_cert_sha256", ""))
             );
+        }
+
+        static MobileUpdateInfo merge(MobileUpdateInfo selected, MobileUpdateInfo canonical) {
+            if (selected == null) return canonical;
+            if (canonical == null) return selected;
+            MobileUpdateInfo target = canonical.latestVersionCode >= selected.latestVersionCode
+                    ? canonical
+                    : selected;
+            return target.withMinSupported(
+                    Math.max(selected.minSupportedVersionCode, canonical.minSupportedVersionCode)
+            );
+        }
+
+        MobileUpdateInfo withMinSupported(int floor) {
+            int effectiveFloor = Math.max(minSupportedVersionCode, floor);
+            boolean effectiveRequired = BuildConfig.VERSION_CODE < effectiveFloor;
+            boolean effectiveAvailable = effectiveRequired || BuildConfig.VERSION_CODE < latestVersionCode;
+            return new MobileUpdateInfo(
+                    effectiveAvailable,
+                    effectiveRequired,
+                    latestVersionCode,
+                    effectiveFloor,
+                    latestVersionName,
+                    message,
+                    telegramUrl,
+                    apkUrl,
+                    rustoreUrl,
+                    releaseId,
+                    sizeBytes,
+                    sha256,
+                    packageName,
+                    signingCertSha256,
+                    policyUnavailable
+            );
+        }
+
+        boolean hasUsableTarget() {
+            return latestVersionCode >= minSupportedVersionCode;
+        }
+
+        String toCacheJson() {
+            JSONObject data = new JSONObject();
+            try {
+                data.put("latest_version_code", latestVersionCode);
+                data.put("min_supported_version_code", minSupportedVersionCode);
+                data.put("latest_version_name", latestVersionName);
+                data.put("release_notes", message);
+                data.put("telegram_url", telegramUrl);
+                data.put("apk_url", apkUrl);
+                data.put("rustore_url", rustoreUrl);
+                data.put("release_id", releaseId);
+                data.put("apk_size_bytes", sizeBytes);
+                data.put("apk_sha256", sha256);
+                data.put("package_name", packageName);
+                data.put("signing_cert_sha256", signingCertSha256);
+            } catch (Exception ignored) {
+            }
+            return data.toString();
         }
 
         static MobileUpdateInfo notRequired() {
             return new MobileUpdateInfo(
                     false,
+                    false,
+                    BuildConfig.VERSION_CODE,
                     BuildConfig.VERSION_CODE,
                     BuildConfig.VERSION_NAME,
                     "",
                     BuildConfig.UPDATE_CHANNEL_URL,
                     BuildConfig.UPDATE_APK_URL,
-                    BuildConfig.RUSTORE_APP_URL
+                    BuildConfig.RUSTORE_APP_URL,
+                    "",
+                    0L,
+                    "",
+                    BuildConfig.APPLICATION_ID,
+                    ""
             );
         }
 
         static MobileUpdateInfo requiredFallback() {
             return new MobileUpdateInfo(
                     true,
+                    true,
+                    BuildConfig.VERSION_CODE + 1,
                     BuildConfig.VERSION_CODE + 1,
                     "",
                     "",
                     BuildConfig.UPDATE_CHANNEL_URL,
                     BuildConfig.UPDATE_APK_URL,
-                    BuildConfig.RUSTORE_APP_URL
+                    BuildConfig.RUSTORE_APP_URL,
+                    "",
+                    0L,
+                    "",
+                    BuildConfig.APPLICATION_ID,
+                    ""
+            );
+        }
+
+        static MobileUpdateInfo policyUnavailable(MobileUpdateInfo cached) {
+            MobileUpdateInfo source = cached == null ? notRequired() : cached;
+            return new MobileUpdateInfo(
+                    false,
+                    false,
+                    source.latestVersionCode,
+                    source.minSupportedVersionCode,
+                    source.latestVersionName,
+                    "Не удалось получить актуальную политику версий ExtraArena.",
+                    source.telegramUrl,
+                    source.apkUrl,
+                    source.rustoreUrl,
+                    source.releaseId,
+                    source.sizeBytes,
+                    source.sha256,
+                    source.packageName,
+                    source.signingCertSha256,
+                    true
+            );
+        }
+
+        ApkUpdateInstaller.Release toApkRelease() {
+            return new ApkUpdateInstaller.Release(
+                    releaseId,
+                    latestVersionCode,
+                    latestVersionName,
+                    apkUrl,
+                    sizeBytes,
+                    sha256,
+                    packageName,
+                    signingCertSha256
             );
         }
 
@@ -5087,9 +5950,33 @@ public class MainActivity extends Activity {
             }
             return "https://" + result;
         }
+
+        private static String normalizeDownloadUrl(String value, String baseUrl, String fallback) {
+            String result = value == null || value.trim().isEmpty() ? fallback : value.trim();
+            if (result.startsWith("https://")) {
+                return result;
+            }
+            if (result.startsWith("/")) {
+                return BaseUrlStore.join(baseUrl, result);
+            }
+            if (result.startsWith("http://")) {
+                return result;
+            }
+            return normalizeUrl(result, fallback);
+        }
     }
 
     public final class AndroidBridge {
+        private final WebAuthContext authContext;
+
+        AndroidBridge(WebAuthContext authContext) {
+            this.authContext = authContext;
+        }
+
+        private boolean isActiveAuthContext() {
+            return isWebAuthContextCurrent(authContext);
+        }
+
         @JavascriptInterface
         public String getPlatform() {
             return "android_app";
@@ -5097,7 +5984,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String getBaseUrl() {
-            return BaseUrlStore.getBaseUrl(MainActivity.this);
+            return authContext.baseUrl;
         }
 
         @JavascriptInterface
@@ -5130,69 +6017,104 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public boolean isTestServer() {
-            return BaseUrlStore.isTestServer(MainActivity.this);
+            return isActiveAuthContext() && BaseUrlStore.isTestServer(MainActivity.this);
         }
 
         @JavascriptInterface
         public String getConnectionProfile() {
-            return ConnectionProfileStore.getSelectedProfile(MainActivity.this).name;
+            return authContext.profileName;
         }
 
         @JavascriptInterface
         public boolean isWhitelistEnabled() {
-            return ConnectionProfileStore.isWhitelistEnabled(MainActivity.this);
+            return authContext.whitelistEnabled;
         }
 
         @JavascriptInterface
         public String getWhitelistCode() {
-            return ConnectionProfileStore.getWhitelistCode(MainActivity.this);
+            return authContext.whitelistCode;
         }
 
         @JavascriptInterface
         public void setAuthToken(String token) {
-            DeviceRegistrar.saveAuthToken(MainActivity.this, token);
+            if (!isActiveAuthContext()) {
+                Log.w(TAG, "Ignoring stale JavaScript auth token after profile/auth switch");
+                return;
+            }
+            DeviceRegistrar.saveAuthToken(
+                    MainActivity.this,
+                    authContext.baseUrl,
+                    authContext.whitelistCode,
+                    token
+            );
             ExtraIdAccountStore.touchAccountByToken(
                     MainActivity.this,
-                    BaseUrlStore.getBaseUrl(MainActivity.this),
+                    authContext.baseUrl,
                     token
             );
         }
 
         @JavascriptInterface
         public String getAuthToken() {
-            return DeviceRegistrar.getAuthToken(MainActivity.this);
+            return isActiveAuthContext()
+                    ? DeviceRegistrar.getAuthToken(
+                    MainActivity.this,
+                    authContext.baseUrl,
+                    authContext.whitelistCode
+            )
+                    : "";
         }
 
         @JavascriptInterface
         public String getExtraIdAccounts() {
+            if (!isActiveAuthContext()) {
+                return "[]";
+            }
             return ExtraIdAccountStore.toJson(
                     MainActivity.this,
-                    BaseUrlStore.getBaseUrl(MainActivity.this),
-                    DeviceRegistrar.getAuthToken(MainActivity.this)
+                    authContext.baseUrl,
+                    DeviceRegistrar.getAuthToken(
+                            MainActivity.this,
+                            authContext.baseUrl,
+                            authContext.whitelistCode
+                    )
             ).toString();
         }
 
         @JavascriptInterface
         public boolean switchExtraIdAccount(String email) {
+            if (!isActiveAuthContext()) {
+                return false;
+            }
             return ExtraIdAccountStore.activateAccount(
                     MainActivity.this,
-                    BaseUrlStore.getBaseUrl(MainActivity.this),
+                    authContext.baseUrl,
                     email
             );
         }
 
         @JavascriptInterface
         public boolean forgetExtraIdAccount(String email) {
+            if (!isActiveAuthContext()) {
+                return false;
+            }
             return ExtraIdAccountStore.removeAccount(
                     MainActivity.this,
-                    BaseUrlStore.getBaseUrl(MainActivity.this),
+                    authContext.baseUrl,
                     email,
-                    DeviceRegistrar.getAuthToken(MainActivity.this)
+                    DeviceRegistrar.getAuthToken(
+                            MainActivity.this,
+                            authContext.baseUrl,
+                            authContext.whitelistCode
+                    )
             );
         }
 
         @JavascriptInterface
         public void saveExtraIdAccount(String email, String token, String displayId, String userId) {
+            if (!isActiveAuthContext()) {
+                return;
+            }
             long parsedUserId = 0L;
             try {
                 parsedUserId = Long.parseLong(userId == null ? "" : userId.trim());
@@ -5204,12 +6126,15 @@ public class MainActivity extends Activity {
                     token,
                     displayId,
                     parsedUserId,
-                    BaseUrlStore.getBaseUrl(MainActivity.this)
+                    authContext.baseUrl
             );
         }
 
         @JavascriptInterface
         public void reloadWithActiveAccount() {
+            if (!isActiveAuthContext()) {
+                return;
+            }
             runOnUiThread(() -> {
                 resetWebViewForNewAuthSession();
                 launchAfterUpdateGate(getIntent());
@@ -5218,17 +6143,53 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void openExtraIdManager() {
+            if (!isActiveAuthContext()) {
+                return;
+            }
             runOnUiThread(MainActivity.this::showExtraIdManagerDialog);
         }
 
         @JavascriptInterface
         public void clearAuthToken() {
+            if (!isActiveAuthContext()) {
+                return;
+            }
             runOnUiThread(MainActivity.this::logoutCurrentDevice);
         }
 
         @JavascriptInterface
         public void requestPushRegistration() {
-            DeviceRegistrar.registerIfReady(MainActivity.this);
+            if (!isActiveAuthContext()) {
+                return;
+            }
+            DeviceRegistrar.registerIfReady(
+                    MainActivity.this,
+                    authContext.baseUrl,
+                    authContext.whitelistCode
+            );
+        }
+
+        @JavascriptInterface
+        public boolean isMenuMusicEnabled() {
+            return nativeMenuMusic == null || nativeMenuMusic.isEnabled();
+        }
+
+        @JavascriptInterface
+        public void setMenuMusicEnabled(boolean enabled) {
+            runOnUiThread(() -> {
+                if (nativeMenuMusic != null) {
+                    nativeMenuMusic.setEnabled(enabled);
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void setAudioScene(String scene) {
+            runOnUiThread(() -> {
+                if (nativeMenuMusic != null) {
+                    nativeMenuMusic.setScene(scene);
+                }
+            });
         }
 
         @JavascriptInterface
@@ -5273,6 +6234,7 @@ public class MainActivity extends Activity {
     }
 
     private void resetWebViewForNewAuthSession() {
+        rotateWebAuthContext();
         try {
             CookieManager manager = CookieManager.getInstance();
             manager.removeAllCookies(null);

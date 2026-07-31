@@ -8,6 +8,10 @@ interface RuStoreIntegration {
 
     void onNewIntent(Intent intent);
 
+    void onResume();
+
+    void destroy();
+
     void checkOptionalUpdate(Runnable continueFlow);
 
     void startImmediateUpdate(Runnable fallback);

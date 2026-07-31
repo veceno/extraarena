@@ -28,6 +28,12 @@ import socketio
 
 from bot.constants import ADMIN_ID, DEFAULT_CATEGORY
 from infrastructure import card_assets
+from infrastructure.android_releases import (
+    AndroidReleaseConfig,
+    AndroidReleaseError,
+    AndroidReleaseService,
+    SERVER_COMPUTED_SHA256,
+)
 from infrastructure.card_assets import card_asset_url, resolve_card_asset_path
 from infrastructure.config import DECK_SIZE, LEAGUE_CONFIG, get_settings, MAX_FREE_DECK_PRESETS, MAX_TOTAL_DECK_PRESETS
 from infrastructure.database import (
@@ -104,6 +110,7 @@ from web.extraid_handlers import (
     _email_delivery_configured as _extraid_email_delivery_configured,
 )
 from web.mcp_routes import register_admin_mcp_routes
+from web.mcp_auth import verify_mcp_token
 from web.max_integration import register_max_routes
 from support.web import register_support_routes
 from infrastructure.extraid_database import ExtraIDDatabase
@@ -153,6 +160,7 @@ BOT_VS_BOT_MARKERS: dict[str, dict[str, Any]] = {}
 ENDED_MATCH_IDS: set[str] = set()
 ENDED_MATCH_TIMES: dict[str, float] = {}
 FINISHED_MATCH_TTL_SECONDS = 600
+ONBOARDING_TUTORIAL_IDLE_TTL_SECONDS = 15 * 60
 ONLINE_USER_TTL_SECONDS = 45
 CASE_KEY_ROLL_TTL_SECONDS = 300
 CASE_KEY_ROLLS: dict[str, dict[str, Any]] = {}
@@ -164,6 +172,10 @@ CASE_USER_REROLL_ROLLS: dict[str, dict[str, Any]] = {}
 CASE_USER_OPENING_TTL_SECONDS = 600
 ACTION_RESULT_TTL_SECONDS = 120
 ACTION_RESULT_CACHE: dict[tuple[str, int, str], dict[str, Any]] = {}
+CANONICAL_ONBOARDING_TRANSITION_EVENTS = frozenset({
+    "welcome_completed",
+    "mandatory_onboarding_completed",
+})
 COMPRESSIBLE_CONTENT_TYPES = (
     "application/javascript",
     "application/json",
@@ -267,6 +279,30 @@ def _configured_https_origin() -> str | None:
         or parts.fragment
     ):
         return None
+    return urlunsplit(("https", parts.netloc, "", "", ""))
+
+
+def _trusted_android_release_origin(value: Any) -> str:
+    """Return a configured HTTPS origin; never derive it from request Host."""
+    text = str(value or "").strip()
+    if (
+        not text
+        or "\\" in text
+        or any(ord(character) < 32 or ord(character) == 127 for character in text)
+    ):
+        return ""
+    try:
+        parts = urlsplit(text)
+        _ = parts.port
+    except ValueError:
+        return ""
+    if (
+        parts.scheme.lower() != "https"
+        or not parts.hostname
+        or parts.username is not None
+        or parts.password is not None
+    ):
+        return ""
     return urlunsplit(("https", parts.netloc, "", "", ""))
 
 
@@ -1284,6 +1320,162 @@ def _is_onboarding_tutorial_engine(engine: Any) -> bool:
     return bool(getattr(engine, "is_onboarding_tutorial", False))
 
 
+def _touch_onboarding_tutorial_runtime(
+    engine: Any,
+    *,
+    now_monotonic: float | None = None,
+    ttl_seconds: float = ONBOARDING_TUTORIAL_IDLE_TTL_SECONDS,
+) -> None:
+    """Refresh the in-memory tutorial lease without touching durable progress."""
+    if not _is_onboarding_tutorial_engine(engine):
+        return
+    now = time.monotonic() if now_monotonic is None else float(now_monotonic)
+    setattr(engine, "onboarding_runtime_last_activity_monotonic", now)
+    setattr(
+        engine,
+        "onboarding_runtime_idle_deadline_monotonic",
+        now + max(0.0, float(ttl_seconds)),
+    )
+    setattr(engine, "runtime_evicted", False)
+
+
+async def _discard_onboarding_tutorial_runtime(
+    app: web.Application,
+    match_id: Any,
+    engine: TutorialBattleEngine,
+) -> None:
+    """Detach one tutorial engine and its transient tasks/sessions from memory."""
+    match_id_str = str(match_id)
+
+    # Detach every discoverable reference synchronously before awaiting task
+    # cancellation. A concurrent status/state request can then create a fresh
+    # runtime and its new sessions cannot be mistaken for stale ones below.
+    bot_task = BOT_TASKS.pop(match_id_str, None)
+    BOT_TASK_KEYS.pop(match_id_str, None)
+    BOT_TASK_OWNERS.pop(match_id_str, None)
+    BOT_VS_BOT_MARKERS.pop(match_id_str, None)
+
+    disconnect_tasks: list[asyncio.Task] = []
+    for key, task in list(MATCH_DISCONNECT_TASKS.items()):
+        if key[0] != match_id_str:
+            continue
+        MATCH_DISCONNECT_TASKS.pop(key, None)
+        if task is not None and task is not asyncio.current_task():
+            disconnect_tasks.append(task)
+    for key in list(MATCH_DISCONNECT_STATES):
+        if key[0] == match_id_str:
+            MATCH_DISCONNECT_STATES.pop(key, None)
+
+    MATCH_SESSIONS.pop(match_id_str, None)
+    for sid, session_data in list(SID_TO_MATCH.items()):
+        if str(session_data.get("match_id")) == match_id_str:
+            SID_TO_MATCH.pop(sid, None)
+
+    active_matches = app.get("active_matches", {})
+    if active_matches.get(match_id_str) is engine:
+        active_matches.pop(match_id_str, None)
+    if ACTIVE_MATCHES.get(match_id_str) is engine:
+        ACTIVE_MATCHES.pop(match_id_str, None)
+    if active_matches.get(match_id_str) is None and ACTIVE_MATCHES.get(match_id_str) is None:
+        app.get("match_game_modes", {}).pop(match_id_str, None)
+
+    tasks_to_stop = [
+        task
+        for task in [bot_task, *disconnect_tasks]
+        if task is not None and task is not asyncio.current_task()
+    ]
+    for task in tasks_to_stop:
+        if not task.done():
+            task.cancel()
+    if tasks_to_stop:
+        await asyncio.gather(*tasks_to_stop, return_exceptions=True)
+
+
+async def _close_onboarding_tutorial_runtime(
+    app: web.Application,
+    match_id: Any,
+    engine: TutorialBattleEngine,
+) -> None:
+    """Remove a completed tutorial runtime while its match lock is held."""
+    match_id_str = str(match_id)
+    engine.is_ended = True
+    setattr(engine, "runtime_closed", True)
+    _mark_match_ended(match_id_str)
+    await _discard_onboarding_tutorial_runtime(app, match_id_str, engine)
+
+
+async def _evict_idle_onboarding_tutorial_runtime(
+    app: web.Application,
+    match_id: Any,
+    engine: TutorialBattleEngine,
+    *,
+    now_monotonic: float,
+    ttl_seconds: float,
+) -> bool:
+    """Evict one idle tutorial under its match lock, preserving DB state."""
+    match_id_str = str(match_id)
+    lock = _get_match_lock(match_id_str)
+    async with lock:
+        current = app.get("active_matches", {}).get(match_id_str)
+        if current is not engine or ACTIVE_MATCHES.get(match_id_str) is not engine:
+            return False
+        if getattr(engine, "runtime_owner_app", app) is not app:
+            return False
+
+        last_activity = getattr(engine, "onboarding_runtime_last_activity_monotonic", None)
+        if last_activity is None:
+            # Runtimes created before this lease existed receive one full TTL;
+            # deploying the cleanup must not evict every live tutorial at once.
+            _touch_onboarding_tutorial_runtime(
+                engine,
+                now_monotonic=now_monotonic,
+                ttl_seconds=ttl_seconds,
+            )
+            return False
+        if float(now_monotonic) < float(last_activity) + max(0.0, float(ttl_seconds)):
+            return False
+
+        # Idle eviction is deliberately not battle completion: no ended marker,
+        # timeout/AFK transition, analytics event, or onboarding DB write occurs.
+        setattr(engine, "runtime_evicted", True)
+        await _discard_onboarding_tutorial_runtime(app, match_id_str, engine)
+        return True
+
+
+async def _evict_idle_onboarding_tutorial_runtimes(
+    app: web.Application,
+    *,
+    now_monotonic: float | None = None,
+    ttl_seconds: float = ONBOARDING_TUTORIAL_IDLE_TTL_SECONDS,
+) -> int:
+    """Run one bounded idle sweep; exposed separately for deterministic tests."""
+    now = time.monotonic() if now_monotonic is None else float(now_monotonic)
+    evicted = 0
+    for match_id, engine in list(app.get("active_matches", {}).items()):
+        if not _is_onboarding_tutorial_engine(engine):
+            continue
+        if await _evict_idle_onboarding_tutorial_runtime(
+            app,
+            match_id,
+            engine,
+            now_monotonic=now,
+            ttl_seconds=ttl_seconds,
+        ):
+            evicted += 1
+            match_id_str = str(match_id)
+            MATCH_INIT_LOCKS.pop(match_id_str, None)
+            match_lock = MATCH_LOCKS.get(match_id_str)
+            lock_waiters = getattr(match_lock, "_waiters", None) if match_lock else None
+            if (
+                match_lock is not None
+                and MATCH_LOCKS.get(match_id_str) is match_lock
+                and not match_lock.locked()
+                and not lock_waiters
+            ):
+                MATCH_LOCKS.pop(match_id_str, None)
+    return evicted
+
+
 async def _handle_onboarding_tutorial_action(
     request: web.Request,
     *,
@@ -1293,15 +1485,57 @@ async def _handle_onboarding_tutorial_action(
     client_action_id: str | None,
     action: dict[str, Any],
 ) -> web.Response:
-    cached_action = _action_cache_get(match_id, user_id, client_action_id)
-    if cached_action:
-        return web.json_response(cached_action["payload"], status=cached_action["status"])
+    # Tutorial actions can arrive through both dedicated and ordinary battle
+    # endpoints. Serialize all of them with completion/runtime teardown.
+    lock = _get_match_lock(str(match_id))
+    async with lock:
+        return await _handle_onboarding_tutorial_action_locked(
+            request,
+            match_id=match_id,
+            engine=engine,
+            user_id=user_id,
+            client_action_id=client_action_id,
+            action=action,
+        )
+
+
+async def _handle_onboarding_tutorial_action_locked(
+    request: web.Request,
+    *,
+    match_id: Any,
+    engine: TutorialBattleEngine,
+    user_id: int,
+    client_action_id: str | None,
+    action: dict[str, Any],
+) -> web.Response:
 
     db_inst = request.app.get("db")
     action_type = str(action.get("type") or "")
     onboarding_state_before = await db_inst.get_onboarding_state(int(user_id)) if db_inst else {}
 
-    if action_type == "complete" and db_inst:
+    # The request may have resolved its engine just before the idle sweeper
+    # acquired this lock. If that runtime was evicted while this request was
+    # waiting, reconstruct the deterministic scenario from the durable step
+    # instead of mutating a detached object.
+    current_engine = request.app.get("active_matches", {}).get(str(match_id))
+    if _is_onboarding_tutorial_engine(current_engine):
+        engine = current_engine
+    elif (
+        current_engine is not engine
+        and str(onboarding_state_before.get("status") or "") == ONBOARDING_STATUS_TUTORIAL_BATTLE
+    ):
+        engine = TutorialBattleEngine(
+            user_id=int(user_id),
+            tutorial_step=int(onboarding_state_before.get("tutorial_step") or 0),
+            db=db_inst,
+            active_matches=request.app["active_matches"],
+        )
+        _bind_match_runtime(engine, request.app)
+        request.app["active_matches"][str(match_id)] = engine
+        request.app.get("match_game_modes", {})[str(match_id)] = "tutorial"
+    _touch_onboarding_tutorial_runtime(engine)
+
+    if db_inst:
         include_telegram_channel_task = _request_includes_telegram_channel_task(request, int(user_id))
         before_status = str(onboarding_state_before.get("status") or "")
         before_step = int(onboarding_state_before.get("tutorial_step") or getattr(engine, "tutorial_step", 0) or 0)
@@ -1309,22 +1543,40 @@ async def _handle_onboarding_tutorial_action(
             ONBOARDING_STATUS_MENU_TOUR,
             ONBOARDING_STATUS_COMPLETED,
         ):
+            await _close_onboarding_tutorial_runtime(request.app, match_id, engine)
+            cached_action = _action_cache_get(match_id, user_id, client_action_id)
+            if cached_action:
+                return web.json_response(cached_action["payload"], status=cached_action["status"])
+            if action_type == "complete":
+                payload = {
+                    "match_id": str(match_id),
+                    "result": {
+                        "success": True,
+                        "tutorial_step": max(before_step, TUTORIAL_FINAL_STEP),
+                        "game_over": True,
+                        "winner_id": int(user_id),
+                    },
+                    "redirect_url": "/?onboarding_menu=1",
+                    "onboarding": _build_onboarding_payload(
+                        onboarding_state_before,
+                        include_telegram_channel_task=include_telegram_channel_task,
+                    ),
+                }
+                _action_cache_set(match_id, user_id, client_action_id, payload, status=200)
+                return web.json_response(payload, status=200)
             payload = {
-                "match_id": str(match_id),
-                "result": {
-                    "success": True,
-                    "tutorial_step": max(before_step, TUTORIAL_FINAL_STEP),
-                    "game_over": True,
-                    "winner_id": int(user_id),
-                },
-                "redirect_url": "/?onboarding_menu=1",
+                "error": "tutorial_not_active",
                 "onboarding": _build_onboarding_payload(
                     onboarding_state_before,
                     include_telegram_channel_task=include_telegram_channel_task,
                 ),
             }
-            _action_cache_set(match_id, user_id, client_action_id, payload, status=200)
-            return web.json_response(payload, status=200)
+            _action_cache_set(match_id, user_id, client_action_id, payload, status=409)
+            return web.json_response(payload, status=409)
+
+    cached_action = _action_cache_get(match_id, user_id, client_action_id)
+    if cached_action:
+        return web.json_response(cached_action["payload"], status=cached_action["status"])
 
     result = engine.apply_tutorial_action(action)
     status_code = 200
@@ -1419,6 +1671,7 @@ async def _handle_onboarding_tutorial_action(
             ),
         }
         _action_cache_set(match_id, user_id, client_action_id, payload, status=status_code)
+        await _close_onboarding_tutorial_runtime(request.app, match_id, engine)
         return web.json_response(payload, status=status_code)
 
     state = engine.get_full_state(viewer_id=user_id)
@@ -2935,6 +3188,8 @@ async def join_match(sid: str, data: dict[str, Any]) -> None:
 
         user_id = await _require_user_id_from_auth_token_str(str(auth_token), app)
         if user_id is None:
+            user_id = _dev_socket_user_id(sid, str(auth_token))
+        if user_id is None:
             await sio.emit("error", {"message": "invalid_auth"}, to=sid)
             return
 
@@ -3608,6 +3863,33 @@ async def _process_battle_end(
         else:
             p1_trophy_change = 0
             p2_trophy_change = 0
+
+        def _already_applied_surrender_delta(player_state: Any, user_id: int) -> int | None:
+            if (
+                getattr(player_state, "replacement_status", ReplacementStatus.ACTIVE)
+                != ReplacementStatus.SURRENDERED
+                or not getattr(player_state, "surrender_processed", False)
+            ):
+                return None
+            raw_delta = _engine_economy_value(
+                getattr(engine, "_trophy_changes", {}),
+                user_id,
+            )
+            try:
+                return int(raw_delta) if raw_delta is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        # The surrender penalty is committed immediately before battle
+        # finalization. Preserve that already-applied delta in history/analytics,
+        # but keep it out of ``reward_plans`` and ``economy_events`` so the
+        # canonical transaction records it without mutating the balance twice.
+        p1_surrender_delta = _already_applied_surrender_delta(engine.p1_state, p1_id_int)
+        p2_surrender_delta = _already_applied_surrender_delta(engine.p2_state, p2_id_int)
+        if p1_surrender_delta is not None:
+            p1_trophy_change = p1_surrender_delta
+        if p2_surrender_delta is not None:
+            p2_trophy_change = p2_surrender_delta
 
         match_duration_seconds = int(time.time() - engine.match_start_time) if hasattr(engine, 'match_start_time') and engine.match_start_time else 0
         p1_hero_id = None
@@ -4334,6 +4616,65 @@ async def _apply_surrender_penalty_once(
     }
 
 
+def _pve_surrender_winner_id(engine: Any, surrendered_user_id: int | str) -> int | None:
+    """Return the real bot opponent for a one-human PvE surrender."""
+    try:
+        surrendered_uid = int(surrendered_user_id)
+    except (TypeError, ValueError):
+        return None
+
+    if hasattr(engine, "_arena") and getattr(engine, "_arena", None):
+        state = engine._arena.state
+        players = [state.p1, state.p2]
+    else:
+        players = [getattr(engine, "p1_state", None), getattr(engine, "p2_state", None)]
+
+    players = [player for player in players if player is not None]
+    if len(players) != 2:
+        return None
+
+    human_players = [player for player in players if not bool(getattr(player, "is_bot", False))]
+    bot_players = [player for player in players if bool(getattr(player, "is_bot", False))]
+    if len(human_players) != 1 or len(bot_players) != 1:
+        return None
+
+    try:
+        human_user_id = int(getattr(human_players[0], "user_id", 0) or 0)
+        bot_user_id = int(getattr(bot_players[0], "user_id", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    if human_user_id != surrendered_uid or not bot_user_id:
+        return None
+    return bot_user_id
+
+
+async def _finalize_human_pve_surrender(
+    app: web.Application,
+    match_id: str,
+    engine: Any,
+    surrendered_user_id: int,
+) -> dict[str, Any] | None:
+    """Finalize PvE surrender through the canonical battle-end transaction.
+
+    The immediate surrender penalty is already stored before this helper runs.
+    ``surrender_processed`` therefore suppresses the ordinary loser trophy
+    delta, while the bot winner suppresses winner rewards. The battle summary
+    transaction still records the loss and resets the human daily-quest streak
+    exactly once.
+    """
+    winner_id = _pve_surrender_winner_id(engine, surrendered_user_id)
+    if winner_id is None:
+        return None
+    processed = await _process_battle_end(app, str(match_id), engine, winner_id)
+    if not processed:
+        return None
+    return {
+        "game_over": True,
+        "winner_id": winner_id,
+        "reason": "human_surrendered_pve",
+    }
+
+
 @sio.event
 async def surrender(sid: str, data: dict[str, Any]) -> None:
     """
@@ -4392,7 +4733,6 @@ async def surrender(sid: str, data: dict[str, Any]) -> None:
             await sio.emit("error", {"message": "Database unavailable"}, to=sid)
             return
 
-        pve_surrender_finished = False
         lock = _get_match_lock(match_id)
         async with lock:
             if _is_terminal_unfinalized(engine):
@@ -4433,20 +4773,16 @@ async def surrender(sid: str, data: dict[str, Any]) -> None:
                 return
 
             if _is_single_human_bot_match(engine, user_id_int):
-                await _terminate_match_without_rewards(
+                game_over_result = await _finalize_human_pve_surrender(
+                    app,
                     match_id,
-                    ACTIVE_MATCHES,
-                    reason="human_surrendered_pve",
-                    message="Матч завершён: игрок сдался в бою против бота",
+                    engine,
+                    user_id_int,
                 )
-                await _mark_matchmaker_finished(app, match_id)
-                game_over_result = {
-                    "game_over": True,
-                    "winner_id": None,
-                    "reason": "human_surrendered_pve",
-                }
-                winner_id = None
-                pve_surrender_finished = True
+                if not game_over_result:
+                    await sio.emit("error", {"message": "battle_finalization_failed"}, to=sid)
+                    return
+                winner_id = game_over_result["winner_id"]
             else:
                 game_over_result = engine.check_game_over()
                 if game_over_result.get("game_over"):
@@ -4464,6 +4800,7 @@ async def surrender(sid: str, data: dict[str, Any]) -> None:
                 "new_trophies": penalty_result.get("new_trophies", 0),
                 "already_processed": bool(penalty_result.get("already_processed")),
                 "game_over": bool(game_over_result.get("game_over")),
+                "winner_id": game_over_result.get("winner_id"),
                 "reason": game_over_result.get("reason"),
             },
             to=sid
@@ -4476,21 +4813,28 @@ async def surrender(sid: str, data: dict[str, Any]) -> None:
             # Отправляем game_over именно сдавшемуся игроку (sid) перед тем как он уйдет
             await sio.emit(
                 "game_over",
-                _build_game_over_payload(engine, winner_id, reason="surrender"),
+                _build_game_over_payload(
+                    engine,
+                    winner_id,
+                    reason=game_over_result.get("reason") or "surrender",
+                ),
                 to=sid
             )
 
             # Также уведомляем комнату, если есть другие участники
             await sio.emit(
                 "game_over",
-                _build_game_over_payload(engine, winner_id, reason="surrender"),
+                _build_game_over_payload(
+                    engine,
+                    winner_id,
+                    reason=game_over_result.get("reason") or "surrender",
+                ),
                 room=match_id
             )
 
         # Запускаем бота, если сейчас ход сдавшегося игрока и игра НЕ закончена
         if (
-            not pve_surrender_finished
-            and not game_over_result.get("game_over")
+            not game_over_result.get("game_over")
             and engine.current_player_id == user_id_int
         ):
             logger.info("surrender: запускаем бота для сдавшегося игрока %s", user_id_int)
@@ -5157,6 +5501,26 @@ async def _require_user_id_from_auth_token_str(auth_token: str, app: web.Applica
     return None
 
 
+def _dev_socket_user_id(sid: str, auth_token: str) -> int | None:
+    """Allow numeric auth only for a loopback Socket.IO peer in development."""
+    settings = get_settings()
+    if str(getattr(settings, "environment", "")).strip().lower() != "development":
+        return None
+    token = str(auth_token or "").strip()
+    if not token.isdigit() or int(token) <= 0:
+        return None
+
+    try:
+        environ = sio.get_environ(sid) or {}
+    except Exception:
+        return None
+    aiohttp_request = environ.get("aiohttp.request")
+    remote = getattr(aiohttp_request, "remote", None) or environ.get("REMOTE_ADDR")
+    if str(remote or "").strip() not in {"127.0.0.1", "::1", "localhost"}:
+        return None
+    return int(token)
+
+
 def _configure_socketio_cors(settings) -> None:
     origins = list(getattr(settings, "cors_allowed_origins", ("*",)) or ())
     sio.eio.cors_allowed_origins = "*" if origins == ["*"] else origins
@@ -5295,6 +5659,8 @@ def _unregister_session(match_id: str, user_id: int, sid: str) -> bool:
 
 def _mark_player_disconnected(match_id: str, user_id: int, engine: BattleEngine) -> None:
     """Track a fully disconnected human without immediately replacing them."""
+    if _is_onboarding_tutorial_engine(engine):
+        return
     censor_clock = getattr(engine, "censor_human_decision_clock", None)
     if callable(censor_clock):
         try:
@@ -5419,6 +5785,7 @@ def _cancel_replacement_bot_task(match_id: str, user_id: int) -> None:
 
 
 def _mark_user_activity_for_match(match_id: str, user_id: int, engine: BattleEngine) -> None:
+    _touch_onboarding_tutorial_runtime(engine)
     key = (str(match_id), int(user_id))
     task = MATCH_DISCONNECT_TASKS.pop(key, None)
     if task and not task.done():
@@ -5643,30 +6010,7 @@ def _both_players_bot_controlled(engine: BattleEngine) -> bool:
 
 
 def _is_single_human_bot_match(engine: BattleEngine, user_id: int | str) -> bool:
-    try:
-        surrendered_uid = int(user_id)
-    except (TypeError, ValueError):
-        return False
-
-    if hasattr(engine, "_arena") and getattr(engine, "_arena", None):
-        state = engine._arena.state
-        players = [state.p1, state.p2]
-    else:
-        players = [getattr(engine, "p1_state", None), getattr(engine, "p2_state", None)]
-
-    players = [player for player in players if player is not None]
-    if len(players) != 2:
-        return False
-
-    human_players = [player for player in players if not bool(getattr(player, "is_bot", False))]
-    bot_players = [player for player in players if bool(getattr(player, "is_bot", False))]
-    if len(human_players) != 1 or len(bot_players) != 1:
-        return False
-
-    try:
-        return int(getattr(human_players[0], "user_id", 0) or 0) == surrendered_uid
-    except (TypeError, ValueError):
-        return False
+    return _pve_surrender_winner_id(engine, user_id) is not None
 
 
 def _replacement_human_is_active_again(engine: BattleEngine, user_id: int | str) -> bool:
@@ -5743,6 +6087,8 @@ async def _terminate_match_without_rewards(
 
 async def _handle_bot_vs_bot_policy(match_id: str, engine: BattleEngine, active_matches: dict[str, BattleEngine]) -> bool:
     """Return True when bot-vs-bot policy consumed the check."""
+    if _is_onboarding_tutorial_engine(engine):
+        return False
     if not _both_players_bot_controlled(engine):
         _clear_bot_vs_bot_marker(str(match_id))
         return False
@@ -5774,6 +6120,8 @@ async def _handle_bot_vs_bot_policy(match_id: str, engine: BattleEngine, active_
 
 def _start_guarded_bot_task(match_id: str, engine: BattleEngine, bot_id: int | str) -> None:
     """Start one bot routine per match/current-turn pair."""
+    if _is_onboarding_tutorial_engine(engine):
+        return
     turn_key = (str(bot_id), int(getattr(engine, "turn", 0) or 0))
     owner_app = getattr(engine, "runtime_owner_app", None)
     if owner_app is not None and owner_app.get("_runtime_closing", False):
@@ -5902,6 +6250,8 @@ async def check_and_run_bot(match_id: str, active_matches: dict[str, BattleEngin
     engine = active_matches.get(match_id)
     if not engine:
         logger.warning("check_and_run_bot: engine not found for match_id=%s", match_id)
+        return
+    if _is_onboarding_tutorial_engine(engine):
         return
 
     if _schedule_disconnected_takeover_if_needed(str(match_id), engine):
@@ -6033,6 +6383,8 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
     - завершение хода.
     """
     logger = logging.getLogger(__name__)
+    if _is_onboarding_tutorial_engine(engine):
+        return
     logger.info("BOT ROUTINE STARTED for %s", bot_id)
     # Snapshot match-owned dependencies once.  A graceful reload may replace
     # module aliases and ``sio.app`` while this coroutine is alive; inference,
@@ -6650,6 +7002,8 @@ async def trigger_bot_move(match_id: str) -> None:
     if not engine:
         logger.warning("[trigger_bot_move] Движок не найден для match_id=%s", match_id)
         return
+    if _is_onboarding_tutorial_engine(engine):
+        return
 
     # Проверяем, что игра еще идет
     if hasattr(engine, 'is_ended') and engine.is_ended:
@@ -6682,6 +7036,8 @@ async def _handle_natural_turn_timeout(
 ) -> bool:
     """Auto-end one naturally expired turn and update AFK/disconnect accounting."""
     logger = logging.getLogger(__name__)
+    if _is_onboarding_tutorial_engine(engine):
+        return False
     if _is_match_waiting_for_players(engine):
         return False
     if not hasattr(engine, "is_turn_expired") or not engine.is_turn_expired() or getattr(engine, "is_ended", False):
@@ -6882,6 +7238,17 @@ def create_web_app(
     android_min_supported_version_code: int | None = None,
     android_update_channel_url: str = "https://t.me/extraarenamobile",
     android_apk_url: str = "https://apk.laveqox.ru",
+    android_releases_enabled: bool = True,
+    android_release_storage_dir: str = "releases/android",
+    android_release_public_base_url: str = "",
+    android_release_package_name: str = "ru.extraarena.app",
+    android_direct_signing_cert_sha256: str = "",
+    android_rustore_signing_cert_sha256: str = "",
+    android_apksigner_command: str = "apksigner",
+    android_aapt_command: str = "aapt2",
+    android_release_max_bytes: int = 1024 * 1024 * 1024,
+    android_release_chunk_bytes: int = 8 * 1024 * 1024,
+    android_upload_token_ttl_seconds: int = 60 * 60,
     shop_allow_max_level_particles: bool = False,
     battle_engine=None,
     support_service=None,
@@ -6928,6 +7295,33 @@ def create_web_app(
     )
     app["android_update_channel_url"] = str(android_update_channel_url or "https://t.me/extraarenamobile")
     app["android_apk_url"] = str(android_apk_url or "https://apk.laveqox.ru")
+    explicit_android_release_origin = str(android_release_public_base_url or "").strip()
+    if explicit_android_release_origin:
+        trusted_android_release_origin = _trusted_android_release_origin(explicit_android_release_origin)
+        if not trusted_android_release_origin:
+            raise ValueError("invalid_android_release_public_base_url")
+    else:
+        trusted_android_release_origin = (
+            _trusted_android_release_origin(webapp_url)
+            or _trusted_android_release_origin(settings.android_release_public_base_url)
+            or _trusted_android_release_origin(settings.webapp_url)
+        )
+    app["android_release_service"] = AndroidReleaseService(
+        db,
+        AndroidReleaseConfig(
+            enabled=bool(android_releases_enabled),
+            storage_dir=Path(android_release_storage_dir),
+            public_base_url=trusted_android_release_origin,
+            package_name=str(android_release_package_name or "ru.extraarena.app"),
+            direct_signing_cert_sha256=str(android_direct_signing_cert_sha256 or ""),
+            rustore_signing_cert_sha256=str(android_rustore_signing_cert_sha256 or ""),
+            apksigner_command=str(android_apksigner_command or "apksigner"),
+            aapt_command=str(android_aapt_command or "aapt2"),
+            max_bytes=int(android_release_max_bytes),
+            chunk_bytes=int(android_release_chunk_bytes),
+            upload_token_ttl_seconds=int(android_upload_token_ttl_seconds),
+        ),
+    )
     app["shop_allow_max_level_particles"] = bool(shop_allow_max_level_particles)
     app["support_service"] = support_service
     app["support_admin_notifier"] = support_admin_notifier
@@ -7085,6 +7479,26 @@ def create_web_app(
         if not _is_admin_api_path(request.path):
             return await handler(request)
         if request.path == "/api/admin/session":
+            return await handler(request)
+        if request.method == "PATCH" and request.path.startswith("/api/admin/android-releases/uploads/"):
+            authorization = str(request.headers.get("Authorization") or "").strip()
+            if authorization.lower().startswith("bearer ") and not request.headers.get("Cookie"):
+                claims = verify_mcp_token(
+                    authorization[7:].strip(),
+                    settings=get_settings(),
+                    required_scopes=("mcp:admin", "admin:android_releases:write"),
+                )
+                if claims:
+                    request["admin_user_id"] = int(claims["admin_user_id"])
+                    request["android_release_mcp_upload"] = True
+                    return await handler(request)
+        if (
+            request.method == "PATCH"
+            and request.path.startswith("/api/admin/android-releases/uploads/")
+            and request.headers.get("X-Android-Upload-Token")
+        ):
+            # A narrowly-scoped, expiring upload ticket is validated by the
+            # chunk handler. This lets MCP stream bytes without an admin cookie.
             return await handler(request)
         user_id = await require_user_id(request)
         if not await _is_admin_user(request.app["db"], user_id):
@@ -7339,6 +7753,7 @@ def create_web_app(
         maintenance_allowed = (
             "/api/runtime/status",
             "/api/mobile/client-version",
+            "/api/mobile/android/releases/",
             "/api/community/news",
         )
         maintenance_on = bool((config.get("maintenance_mode") or {}).get("enabled", False))
@@ -7389,9 +7804,10 @@ def create_web_app(
         elif origin and origin in allowed_origins:
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Vary"] = "Origin"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = (
-            "Content-Type, Authorization, X-Telegram-Init-Data"
+            "Content-Type, Authorization, X-Telegram-Init-Data, "
+            "X-Android-Upload-Token, Upload-Offset"
         )
         return response
 
@@ -7498,6 +7914,13 @@ def create_web_app(
             status=200 if ok else 503,
         )
 
+    def _android_release_error_response(exc: AndroidReleaseError) -> web.Response:
+        return web.json_response(
+            {"error": exc.code, **exc.details},
+            status=exc.status,
+            headers=NO_STORE_CACHE_HEADERS,
+        )
+
     async def mobile_client_version_handler(request: web.Request) -> web.Response:
         def as_int(value: Any, fallback: int = 0) -> int:
             try:
@@ -7506,20 +7929,54 @@ def create_web_app(
                 return fallback
 
         platform = str(request.rel_url.query.get("platform") or "android").lower()
+        channel = str(request.rel_url.query.get("channel") or "direct").lower()
         current_code = as_int(request.rel_url.query.get("version_code"), 0)
         current_name = str(request.rel_url.query.get("version_name") or "")
+        release_service: AndroidReleaseService = request.app["android_release_service"]
+        try:
+            manifest = await release_service.build_manifest(
+                current_version_code=current_code,
+                current_version_name=current_name,
+                channel=channel,
+                platform=platform,
+            )
+        except AndroidReleaseError as exc:
+            if exc.code not in {"android_releases_disabled"}:
+                return _android_release_error_response(exc)
+            manifest = None
+        except Exception as exc:
+            # When durable release management is enabled, falling back to the
+            # legacy env floor could let an old build bypass a previously
+            # mandatory release. Explicitly disabling the service is the only
+            # supported legacy-manifest path.
+            logging.getLogger(__name__).error("Android release manifest unavailable: %s", exc)
+            return web.json_response(
+                {"error": "android_release_manifest_unavailable"},
+                status=503,
+                headers=NO_STORE_CACHE_HEADERS,
+            )
+        if manifest:
+            if channel == "rustore" and not manifest.get("update_url"):
+                manifest["update_url"] = app.get("rustore_app_url")
+            manifest["telegram_url"] = app.get("android_update_channel_url")
+            manifest["rustore_url"] = app.get("rustore_app_url")
+            return web.json_response(manifest, headers=NO_STORE_CACHE_HEADERS)
+
         latest_code = int(app.get("android_latest_version_code") or 0)
         min_supported_code = int(app.get("android_min_supported_version_code") or latest_code)
         latest_name = str(app.get("android_latest_version_name") or "")
-        required = platform == "android" and current_code < max(latest_code, min_supported_code)
+        required = platform == "android" and current_code < min_supported_code
+        update_available = platform == "android" and current_code < latest_code
 
         return web.json_response({
             "platform": platform,
+            "channel": channel,
             "current_version_code": current_code,
             "current_version_name": current_name,
             "latest_version_code": latest_code,
             "latest_version_name": latest_name,
             "min_supported_version_code": min_supported_code,
+            "update_available": update_available,
             "required": required,
             "update_required": required,
             "update_url": app.get("android_update_channel_url"),
@@ -7527,7 +7984,161 @@ def create_web_app(
             "apk_url": app.get("android_apk_url"),
             "rustore_url": app.get("rustore_app_url"),
             "message": "Вышло обновление ExtraArena. Скачай новую версию, чтобы продолжить игру.",
-        })
+        }, headers=NO_STORE_CACHE_HEADERS)
+
+    async def android_release_download_handler(request: web.Request) -> web.StreamResponse:
+        release_service: AndroidReleaseService = request.app["android_release_service"]
+        try:
+            artifact = await release_service.resolve_download(request.match_info["release_id"])
+        except AndroidReleaseError as exc:
+            return _android_release_error_response(exc)
+        raw_name = str(artifact.get("original_filename") or "extraarena.apk")
+        filename = re.sub(r"[^A-Za-z0-9._-]", "_", Path(raw_name).name) or "extraarena.apk"
+        sha256 = str(artifact.get("sha256") or "")
+        headers = {
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "Content-Type": "application/vnd.android.package-archive",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Content-Type-Options": "nosniff",
+            "Accept-Ranges": "bytes",
+            "ETag": f'"sha256-{sha256}"',
+            "X-Checksum-Sha256": sha256,
+        }
+        try:
+            headers["Digest"] = "sha-256=" + base64.b64encode(bytes.fromhex(sha256)).decode("ascii")
+        except ValueError:
+            pass
+        return web.FileResponse(artifact["path"], headers=headers)
+
+    async def admin_android_releases_list_handler(request: web.Request) -> web.Response:
+        service: AndroidReleaseService = request.app["android_release_service"]
+        try:
+            result = await service.list_releases(
+                channel=request.rel_url.query.get("channel") or None,
+                limit=_admin_int_query(request, "limit", 100, min_value=1, max_value=200),
+                offset=_admin_int_query(request, "offset", 0, min_value=0, max_value=1_000_000),
+                include_retired=str(request.rel_url.query.get("include_retired") or "true").lower()
+                not in {"0", "false", "no"},
+            )
+            return web.json_response({"data": result}, headers=NO_STORE_CACHE_HEADERS)
+        except AndroidReleaseError as exc:
+            return _android_release_error_response(exc)
+
+    async def admin_android_release_read_handler(request: web.Request) -> web.Response:
+        try:
+            release = await request.app["android_release_service"].read_release(request.match_info["release_id"])
+            return web.json_response({"data": release}, headers=NO_STORE_CACHE_HEADERS)
+        except AndroidReleaseError as exc:
+            return _android_release_error_response(exc)
+
+    async def admin_android_upload_prepare_handler(request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise AndroidReleaseError("invalid_android_release_payload")
+            result = await request.app["android_release_service"].prepare_upload(
+                channel=body.get("channel") or "direct",
+                artifact_kind=body.get("artifact_kind") or "apk",
+                filename=body.get("filename"),
+                size_bytes=body.get("size_bytes"),
+                sha256=body.get("sha256") or SERVER_COMPUTED_SHA256,
+                version_code=body.get("version_code"),
+                version_name=body.get("version_name"),
+                release_notes=body.get("release_notes") or "",
+                admin_user_id=int(request["admin_user_id"]),
+            )
+            return web.json_response({"data": result}, status=201, headers=NO_STORE_CACHE_HEADERS)
+        except AndroidReleaseError as exc:
+            return _android_release_error_response(exc)
+        except (ValueError, TypeError, _stdlib_json.JSONDecodeError):
+            return web.json_response({"error": "invalid_android_release_payload"}, status=400)
+
+    async def admin_android_upload_status_handler(request: web.Request) -> web.Response:
+        try:
+            result = await request.app["android_release_service"].upload_status(request.match_info["upload_id"])
+            return web.json_response({"data": result}, headers=NO_STORE_CACHE_HEADERS)
+        except AndroidReleaseError as exc:
+            return _android_release_error_response(exc)
+
+    async def admin_android_upload_chunk_handler(request: web.Request) -> web.Response:
+        service: AndroidReleaseService = request.app["android_release_service"]
+        upload_token = str(request.headers.get("X-Android-Upload-Token") or "").strip() or None
+        if request.get("admin_user_id") is None and not upload_token:
+            return web.json_response({"error": "android_release_upload_auth_required"}, status=401)
+        try:
+            offset = int(str(request.headers.get("Upload-Offset") or "").strip())
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid_android_upload_offset"}, status=400)
+        content_length = request.content_length
+        if content_length is not None and content_length > int(service.config.chunk_bytes):
+            return web.json_response({"error": "android_release_chunk_too_large"}, status=413)
+        try:
+            result = await service.append_upload_chunk(
+                upload_id=request.match_info["upload_id"],
+                offset=offset,
+                chunks=request.content.iter_chunked(256 * 1024),
+                upload_token=upload_token,
+            )
+            return web.json_response(
+                {"data": result},
+                headers={**NO_STORE_CACHE_HEADERS, "Upload-Offset": str(result.get("received_bytes") or 0)},
+            )
+        except AndroidReleaseError as exc:
+            response = _android_release_error_response(exc)
+            if "expected_offset" in exc.details:
+                response.headers["Upload-Offset"] = str(exc.details["expected_offset"])
+            return response
+
+    async def admin_android_upload_finalize_handler(request: web.Request) -> web.Response:
+        try:
+            result = await request.app["android_release_service"].finalize_upload(
+                upload_id=request.match_info["upload_id"],
+                admin_user_id=int(request["admin_user_id"]),
+            )
+            return web.json_response({"data": result}, headers=NO_STORE_CACHE_HEADERS)
+        except AndroidReleaseError as exc:
+            return _android_release_error_response(exc)
+
+    async def admin_android_upload_abort_handler(request: web.Request) -> web.Response:
+        try:
+            result = await request.app["android_release_service"].abort_upload(
+                upload_id=request.match_info["upload_id"],
+                admin_user_id=int(request["admin_user_id"]),
+            )
+            return web.json_response({"data": result}, headers=NO_STORE_CACHE_HEADERS)
+        except AndroidReleaseError as exc:
+            return _android_release_error_response(exc)
+
+    async def admin_android_release_publish_handler(request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise AndroidReleaseError("invalid_android_release_payload")
+            result = await request.app["android_release_service"].publish_release(
+                release_id=request.match_info["release_id"],
+                required=bool(body.get("required", False)),
+                expected_version_code=body.get("expected_version_code"),
+                store_release_confirmed=body.get("store_release_confirmed") is True,
+                admin_user_id=int(request["admin_user_id"]),
+            )
+            return web.json_response({"data": result}, headers=NO_STORE_CACHE_HEADERS)
+        except AndroidReleaseError as exc:
+            return _android_release_error_response(exc)
+
+    async def admin_android_release_retire_handler(request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise AndroidReleaseError("invalid_android_release_payload")
+            result = await request.app["android_release_service"].retire_release(
+                release_id=request.match_info["release_id"],
+                expected_version_code=body.get("expected_version_code"),
+                admin_user_id=int(request["admin_user_id"]),
+                reason=str(body.get("reason") or ""),
+            )
+            return web.json_response({"data": result}, headers=NO_STORE_CACHE_HEADERS)
+        except AndroidReleaseError as exc:
+            return _android_release_error_response(exc)
 
     async def runtime_status_handler(request: web.Request) -> web.Response:
         db_instance: Database = request.app["db"]
@@ -13303,20 +13914,20 @@ def create_web_app(
             onboarding_state = await db.get_onboarding_state(int(viewer_id))
             expected_tutorial_match = str(onboarding_state.get("tutorial_match_id") or fallback_tutorial_match)
             if str(match_id) == expected_tutorial_match:
-                if onboarding_state.get("status") not in (
-                    ONBOARDING_STATUS_TUTORIAL_BATTLE,
-                    ONBOARDING_STATUS_MENU_TOUR,
-                    ONBOARDING_STATUS_COMPLETED,
-                ):
-                    onboarding_state = await db.set_onboarding_state(
-                        int(viewer_id),
-                        status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
-                        current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
-                        tutorial_step=0,
-                        tutorial_match_id=expected_tutorial_match,
-                    )
-                if onboarding_state.get("status") == ONBOARDING_STATUS_TUTORIAL_BATTLE:
-                    engine = await _ensure_tutorial_engine_for_user(request, int(viewer_id), onboarding_state)
+                # Always cross the tutorial lock, including after a durable
+                # menu/completed transition. Completion persists menu_tour
+                # before tearing down the runtime, so trusting a pre-lock
+                # engine here could leak that detached battle state.
+                engine = await _ensure_tutorial_engine_for_user(
+                    request,
+                    int(viewer_id),
+                    allow_transition=True,
+                )
+                # Completion may have won while this request waited for the
+                # user lock. Re-read before deciding whether a missing runtime
+                # is a tutorial gate or an ordinary missing match.
+                onboarding_state = await db.get_onboarding_state(int(viewer_id))
+                if _is_onboarding_tutorial_engine(engine):
                     request.app["match_game_modes"][str(match_id)] = "tutorial"
                 elif not onboarding_state.get("completed"):
                     return web.json_response(_onboarding_gate_payload(onboarding_state), status=403)
@@ -13479,6 +14090,9 @@ def create_web_app(
                     _bind_match_runtime(engine, request.app)
                     request.app["active_matches"][match_id] = engine
                     request.app["match_game_modes"][match_id] = "tutorial"
+                _touch_onboarding_tutorial_runtime(
+                    request.app["active_matches"].get(match_id)
+                )
                 return web.json_response({
                     "active": True,
                     "match_id": match_id,
@@ -13576,23 +14190,13 @@ def create_web_app(
             board_position = 0
 
         engine = _get_match_engine(match_id)
-        if not engine and str(match_id) == tutorial_match_id_for_user(int(user_id_int)):
+        if str(match_id) == tutorial_match_id_for_user(int(user_id_int)):
             await _ensure_onboarding_user(int(user_id_int))
-            onboarding_state = await db.get_onboarding_state(int(user_id_int))
-            if onboarding_state.get("status") not in (
-                ONBOARDING_STATUS_TUTORIAL_BATTLE,
-                ONBOARDING_STATUS_MENU_TOUR,
-                ONBOARDING_STATUS_COMPLETED,
-            ):
-                onboarding_state = await db.set_onboarding_state(
-                    int(user_id_int),
-                    status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
-                    current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
-                    tutorial_step=int(onboarding_state.get("tutorial_step") or 0),
-                    tutorial_match_id=str(match_id),
-                )
-            if onboarding_state.get("status") == ONBOARDING_STATUS_TUTORIAL_BATTLE:
-                engine = await _ensure_tutorial_engine_for_user(request, int(user_id_int), onboarding_state)
+            engine = await _ensure_tutorial_engine_for_user(
+                request,
+                int(user_id_int),
+                allow_transition=True,
+            )
         if not engine:
             if _is_finished_match(match_id):
                 return web.json_response(_build_finished_match_action_payload(match_id))
@@ -13779,23 +14383,13 @@ def create_web_app(
             return web.json_response(cached_action["payload"], status=cached_action["status"])
 
         engine = _get_match_engine(match_id)
-        if not engine and str(match_id) == tutorial_match_id_for_user(int(user_id_int)):
+        if str(match_id) == tutorial_match_id_for_user(int(user_id_int)):
             await _ensure_onboarding_user(int(user_id_int))
-            onboarding_state = await db.get_onboarding_state(int(user_id_int))
-            if onboarding_state.get("status") not in (
-                ONBOARDING_STATUS_TUTORIAL_BATTLE,
-                ONBOARDING_STATUS_MENU_TOUR,
-                ONBOARDING_STATUS_COMPLETED,
-            ):
-                onboarding_state = await db.set_onboarding_state(
-                    int(user_id_int),
-                    status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
-                    current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
-                    tutorial_step=int(onboarding_state.get("tutorial_step") or 0),
-                    tutorial_match_id=str(match_id),
-                )
-            if onboarding_state.get("status") == ONBOARDING_STATUS_TUTORIAL_BATTLE:
-                engine = await _ensure_tutorial_engine_for_user(request, int(user_id_int), onboarding_state)
+            engine = await _ensure_tutorial_engine_for_user(
+                request,
+                int(user_id_int),
+                allow_transition=True,
+            )
         if not engine:
             if _is_finished_match(match_id):
                 return web.json_response(_build_finished_match_action_payload(match_id))
@@ -13967,7 +14561,8 @@ def create_web_app(
     async def battle_surrender_handler(request: web.Request) -> web.Response:
         """
         Обработчик сдачи игрока (surrender).
-        Трофеи списываются немедленно, но бой продолжается под управлением бота.
+        Трофеи списываются немедленно. PvE завершается поражением игрока,
+        а в PvP управление сдавшейся стороной может продолжить replacement-бот.
         """
         logger = logging.getLogger(__name__)
         try:
@@ -14016,7 +14611,6 @@ def create_web_app(
                 return web.json_response(_onboarding_gate_payload(onboarding_state), status=403)
 
         should_run_bot = False
-        pve_surrender_finished = False
         lock = _get_match_lock(match_id)
         async with lock:
             cached_action = _action_cache_get(match_id, user_id_int, client_action_id)
@@ -14054,19 +14648,15 @@ def create_web_app(
                 return web.json_response(payload_out, status=status)
 
             if _is_single_human_bot_match(engine, user_id_int):
-                await _terminate_match_without_rewards(
+                game_over_result = await _finalize_human_pve_surrender(
+                    request.app,
                     match_id,
-                    request.app.get("active_matches", ACTIVE_MATCHES),
-                    reason="human_surrendered_pve",
-                    message="Матч завершён: игрок сдался в бою против бота",
+                    engine,
+                    user_id_int,
                 )
-                await _mark_matchmaker_finished(request.app, match_id)
-                game_over_result = {
-                    "game_over": True,
-                    "winner_id": None,
-                    "reason": "human_surrendered_pve",
-                }
-                pve_surrender_finished = True
+                if not game_over_result:
+                    payload_out = {"error": "battle_finalization_failed"}
+                    return web.json_response(payload_out, status=503)
             else:
                 game_over_result = engine.check_game_over()
 
@@ -14076,13 +14666,17 @@ def create_web_app(
                 else:
                     should_run_bot = engine.current_player_id == user_id_int
 
-        if game_over_result.get("game_over") and not pve_surrender_finished:
+        if game_over_result.get("game_over"):
             winner_id = game_over_result.get("winner_id")
             sio_inst = request.app.get("socketio")
             if sio_inst:
                 await sio_inst.emit(
                     "game_over",
-                    _build_game_over_payload(engine, winner_id, reason="surrender"),
+                    _build_game_over_payload(
+                        engine,
+                        winner_id,
+                        reason=game_over_result.get("reason") or "surrender",
+                    ),
                     room=match_id,
                 )
 
@@ -14099,6 +14693,7 @@ def create_web_app(
             "new_trophies": penalty_result.get("new_trophies", 0),
             "state": current_state,
             "game_over": game_over_result.get("game_over", False),
+            "winner_id": game_over_result.get("winner_id"),
             "reason": game_over_result.get("reason"),
         }
         _action_cache_set(match_id, user_id_int, client_action_id, payload_out)
@@ -14127,23 +14722,13 @@ def create_web_app(
             return web.json_response(cached_action["payload"], status=cached_action["status"])
 
         engine = _get_match_engine(match_id)
-        if not engine and str(match_id) == tutorial_match_id_for_user(int(user_id_int)):
+        if str(match_id) == tutorial_match_id_for_user(int(user_id_int)):
             await _ensure_onboarding_user(int(user_id_int))
-            onboarding_state = await db.get_onboarding_state(int(user_id_int))
-            if onboarding_state.get("status") not in (
-                ONBOARDING_STATUS_TUTORIAL_BATTLE,
-                ONBOARDING_STATUS_MENU_TOUR,
-                ONBOARDING_STATUS_COMPLETED,
-            ):
-                onboarding_state = await db.set_onboarding_state(
-                    int(user_id_int),
-                    status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
-                    current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
-                    tutorial_step=int(onboarding_state.get("tutorial_step") or 0),
-                    tutorial_match_id=str(match_id),
-                )
-            if onboarding_state.get("status") == ONBOARDING_STATUS_TUTORIAL_BATTLE:
-                engine = await _ensure_tutorial_engine_for_user(request, int(user_id_int), onboarding_state)
+            engine = await _ensure_tutorial_engine_for_user(
+                request,
+                int(user_id_int),
+                allow_transition=True,
+            )
         if not engine:
             if _is_finished_match(match_id):
                 return web.json_response(_build_finished_match_action_payload(match_id))
@@ -14298,23 +14883,13 @@ def create_web_app(
             return web.json_response(cached_action["payload"], status=cached_action["status"])
 
         engine = _get_match_engine(match_id)
-        if not engine and str(match_id) == tutorial_match_id_for_user(int(user_id_int)):
+        if str(match_id) == tutorial_match_id_for_user(int(user_id_int)):
             await _ensure_onboarding_user(int(user_id_int))
-            onboarding_state = await db.get_onboarding_state(int(user_id_int))
-            if onboarding_state.get("status") not in (
-                ONBOARDING_STATUS_TUTORIAL_BATTLE,
-                ONBOARDING_STATUS_MENU_TOUR,
-                ONBOARDING_STATUS_COMPLETED,
-            ):
-                onboarding_state = await db.set_onboarding_state(
-                    int(user_id_int),
-                    status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
-                    current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
-                    tutorial_step=int(onboarding_state.get("tutorial_step") or 0),
-                    tutorial_match_id=str(match_id),
-                )
-            if onboarding_state.get("status") == ONBOARDING_STATUS_TUTORIAL_BATTLE:
-                engine = await _ensure_tutorial_engine_for_user(request, int(user_id_int), onboarding_state)
+            engine = await _ensure_tutorial_engine_for_user(
+                request,
+                int(user_id_int),
+                allow_transition=True,
+            )
         if not engine:
             if _is_finished_match(match_id):
                 return web.json_response(_build_finished_match_action_payload(match_id))
@@ -14499,6 +15074,8 @@ def create_web_app(
     app.router.add_get("/arena", battle_page_handler)   # основной маршрут для UI арены
     app.router.add_get("/battle", battle_page_handler)  # обратная совместимость
     app.router.add_get("/api/mobile/client-version", mobile_client_version_handler)
+    app.router.add_get("/api/mobile/android/releases/manifest", mobile_client_version_handler)
+    app.router.add_get("/api/mobile/android/releases/{release_id}/apk", android_release_download_handler)
     app.router.add_get("/api/mobile/extra-arena-widget", mobile_extra_arena_widget_handler)
     app.router.add_get("/api/runtime/status", runtime_status_handler)
     app.router.add_get("/api/profile", profile_handler)
@@ -14528,6 +15105,33 @@ def create_web_app(
     app.router.add_post("/api/promocode/use", promocode_use_handler)
     app.router.add_post("/api/admin/session", admin_session_handler)
     register_admin_mcp_routes(app, require_user_id=require_user_id, is_admin_user=_is_admin_user)
+    app.router.add_get("/api/admin/android-releases", admin_android_releases_list_handler)
+    app.router.add_post("/api/admin/android-releases/uploads", admin_android_upload_prepare_handler)
+    app.router.add_get(
+        "/api/admin/android-releases/uploads/{upload_id}",
+        admin_android_upload_status_handler,
+    )
+    app.router.add_patch(
+        "/api/admin/android-releases/uploads/{upload_id}",
+        admin_android_upload_chunk_handler,
+    )
+    app.router.add_post(
+        "/api/admin/android-releases/uploads/{upload_id}/finalize",
+        admin_android_upload_finalize_handler,
+    )
+    app.router.add_post(
+        "/api/admin/android-releases/uploads/{upload_id}/abort",
+        admin_android_upload_abort_handler,
+    )
+    app.router.add_get("/api/admin/android-releases/{release_id}", admin_android_release_read_handler)
+    app.router.add_post(
+        "/api/admin/android-releases/{release_id}/publish",
+        admin_android_release_publish_handler,
+    )
+    app.router.add_post(
+        "/api/admin/android-releases/{release_id}/retire",
+        admin_android_release_retire_handler,
+    )
     if support_service is not None:
         register_support_routes(
             app,
@@ -14983,6 +15587,12 @@ def create_web_app(
         step = str(data.get("step", "")).strip()
         if not step or len(step) > 64:
             return web.json_response({"error": "invalid_step"}, status=400)
+        # These events describe committed server-side state transitions. Older
+        # clients used to mirror them through the generic analytics endpoint,
+        # producing two rows for one transition. Acknowledge those mirrors for
+        # backwards compatibility; the transition endpoints are canonical.
+        if step in CANONICAL_ONBOARDING_TRANSITION_EVENTS:
+            return web.json_response({"success": True, "canonical": True})
         completed = bool(data.get("completed", False))
         time_spent = data.get("time_spent_seconds")
         if time_spent is not None:
@@ -22367,15 +22977,24 @@ def create_web_app(
         user_id = await require_user_id(request)
 
         try:
-            await db.mark_welcome_shown(user_id)
-            await db.set_onboarding_state(
-                user_id,
-                status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
-                current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
-                tutorial_step=0,
-                tutorial_match_id=tutorial_match_id_for_user(user_id),
-            )
-            await db.track_onboarding_event(user_id, "welcome_completed", True)
+            lock = _get_match_lock(tutorial_match_id_for_user(user_id))
+            async with lock:
+                current_state = await db.get_onboarding_state(user_id)
+                if current_state.get("status") in (ONBOARDING_STATUS_WELCOME, "not_started"):
+                    await db.mark_welcome_shown(user_id)
+                    await db.set_onboarding_state(
+                        user_id,
+                        status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                        current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                        tutorial_step=0,
+                        tutorial_match_id=tutorial_match_id_for_user(user_id),
+                    )
+                    await db.track_onboarding_event(
+                        user_id,
+                        "welcome_completed",
+                        True,
+                        metadata={"source": "legacy_welcome_mark_shown"},
+                    )
             return web.json_response({"success": True})
         except Exception as e:
             import logging
@@ -22394,13 +23013,38 @@ def create_web_app(
         )
         await db.track_onboarding_event(int(user_id), "user_created", True)
 
-    async def _ensure_tutorial_engine_for_user(
+    async def _ensure_tutorial_engine_for_user_locked(
         request: web.Request,
         user_id: int,
-        state: dict[str, Any] | None = None,
-    ) -> TutorialBattleEngine:
-        state = state or await db.get_onboarding_state(int(user_id))
-        match_id = str(state.get("tutorial_match_id") or tutorial_match_id_for_user(int(user_id)))
+        *,
+        allow_transition: bool,
+    ) -> TutorialBattleEngine | None:
+        """Re-read durable progress and ensure a runtime while the user lock is held."""
+        state = await db.get_onboarding_state(int(user_id))
+        match_id = tutorial_match_id_for_user(int(user_id))
+        status = str(state.get("status") or "")
+        if state.get("completed") or status in (
+            ONBOARDING_STATUS_MENU_TOUR,
+            ONBOARDING_STATUS_COMPLETED,
+        ):
+            stale_engine = request.app["active_matches"].get(match_id)
+            if _is_onboarding_tutorial_engine(stale_engine):
+                await _discard_onboarding_tutorial_runtime(
+                    request.app,
+                    match_id,
+                    stale_engine,
+                )
+            return None
+        if status != ONBOARDING_STATUS_TUTORIAL_BATTLE:
+            if not allow_transition:
+                return None
+            state = await db.set_onboarding_state(
+                int(user_id),
+                status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                tutorial_step=int(state.get("tutorial_step") or 0),
+                tutorial_match_id=match_id,
+            )
         tutorial_step = int(state.get("tutorial_step") or 0)
         engine = request.app["active_matches"].get(match_id)
         if not _is_onboarding_tutorial_engine(engine):
@@ -22412,10 +23056,28 @@ def create_web_app(
             )
             _bind_match_runtime(engine, request.app)
             request.app["active_matches"][match_id] = engine
-        else:
-            engine.set_tutorial_step(tutorial_step)
+        # An existing in-memory runtime is authoritative. Replaying it from a
+        # state snapshot read before another request acquired the match lock can
+        # roll a just-completed step back. A missing runtime is reconstructed
+        # from the persisted step above, which preserves cold resume.
+        _touch_onboarding_tutorial_runtime(engine)
         request.app["match_game_modes"][match_id] = "tutorial"
         return engine
+
+    async def _ensure_tutorial_engine_for_user(
+        request: web.Request,
+        user_id: int,
+        *,
+        allow_transition: bool = False,
+    ) -> TutorialBattleEngine | None:
+        """Serialize runtime creation with completion and idle teardown."""
+        lock = _get_match_lock(tutorial_match_id_for_user(int(user_id)))
+        async with lock:
+            return await _ensure_tutorial_engine_for_user_locked(
+                request,
+                int(user_id),
+                allow_transition=allow_transition,
+            )
 
     def _onboarding_payload_for_request(
         request: web.Request,
@@ -22455,50 +23117,99 @@ def create_web_app(
     async def onboarding_welcome_complete_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
         await _ensure_onboarding_user(user_id)
-        current_state = await db.get_onboarding_state(user_id)
-        if current_state.get("completed") or current_state.get("status") not in (ONBOARDING_STATUS_WELCOME, "not_started"):
-            return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, current_state)})
-        state = await db.set_onboarding_state(
-            user_id,
-            status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
-            current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
-            tutorial_step=0,
-            tutorial_match_id=tutorial_match_id_for_user(user_id),
-        )
-        await db.mark_welcome_shown(user_id)
-        await db.track_onboarding_event(user_id, "welcome_completed", True)
-        return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, state)})
-
-    async def onboarding_tutorial_start_handler(request: web.Request) -> web.Response:
-        user_id = await require_user_id(request)
-        await _ensure_onboarding_user(user_id)
-        state = await db.get_onboarding_state(user_id)
-        if state.get("completed"):
-            return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, state)})
-        if state.get("status") == ONBOARDING_STATUS_MENU_TOUR:
-            return web.json_response({
-                "success": True,
-                "redirect_url": "/?onboarding_menu=1",
-                "onboarding": _onboarding_payload_for_request(request, user_id, state),
-            })
-        if state.get("status") != ONBOARDING_STATUS_TUTORIAL_BATTLE:
+        lock = _get_match_lock(tutorial_match_id_for_user(user_id))
+        async with lock:
+            current_state = await db.get_onboarding_state(user_id)
+            if current_state.get("completed") or current_state.get("status") not in (ONBOARDING_STATUS_WELCOME, "not_started"):
+                return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, current_state)})
             state = await db.set_onboarding_state(
                 user_id,
                 status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
                 current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
-                tutorial_step=int(state.get("tutorial_step") or 0),
+                tutorial_step=0,
                 tutorial_match_id=tutorial_match_id_for_user(user_id),
             )
-        engine = await _ensure_tutorial_engine_for_user(request, user_id, state)
-        await db.track_onboarding_event(user_id, "tutorial_battle_started", True)
-        match_id = str(engine.match_id)
-        return web.json_response({
-            "success": True,
-            "match_id": match_id,
-            "redirect_url": f"/arena?id={match_id}&onboarding=1",
-            "state": engine.get_full_state(viewer_id=user_id),
-            "onboarding": _onboarding_payload_for_request(request, user_id, await db.get_onboarding_state(user_id)),
-        })
+            await db.mark_welcome_shown(user_id)
+            await db.track_onboarding_event(
+                user_id,
+                "welcome_completed",
+                True,
+                metadata={"source": "onboarding_gate"},
+            )
+            return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, state)})
+
+    async def onboarding_tutorial_start_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        lock = _get_match_lock(tutorial_match_id_for_user(user_id))
+        async with lock:
+            await _ensure_onboarding_user(user_id)
+            # Re-read only after acquiring the same lock used by tutorial
+            # completion. A stale pre-lock snapshot must never recreate a
+            # runtime after completion moved the user into menu_tour.
+            state = await db.get_onboarding_state(user_id)
+            if state.get("completed"):
+                return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, state)})
+            if state.get("status") == ONBOARDING_STATUS_MENU_TOUR:
+                return web.json_response({
+                    "success": True,
+                    "redirect_url": "/?onboarding_menu=1",
+                    "onboarding": _onboarding_payload_for_request(request, user_id, state),
+                })
+            transitioned_to_tutorial = state.get("status") != ONBOARDING_STATUS_TUTORIAL_BATTLE
+            if transitioned_to_tutorial:
+                state = await db.set_onboarding_state(
+                    user_id,
+                    status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                    current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                    tutorial_step=int(state.get("tutorial_step") or 0),
+                    tutorial_match_id=tutorial_match_id_for_user(user_id),
+                )
+            match_id = str(state.get("tutorial_match_id") or tutorial_match_id_for_user(user_id))
+            had_runtime = _is_onboarding_tutorial_engine(
+                request.app["active_matches"].get(match_id)
+            )
+            engine = await _ensure_tutorial_engine_for_user_locked(
+                request,
+                user_id,
+                allow_transition=False,
+            )
+            if engine is None:
+                coherent_state = await db.get_onboarding_state(user_id)
+                return web.json_response({
+                    "success": True,
+                    "redirect_url": "/?onboarding_menu=1",
+                    "onboarding": _onboarding_payload_for_request(
+                        request,
+                        user_id,
+                        coherent_state,
+                    ),
+                })
+            first_start = bool(transitioned_to_tutorial or not had_runtime)
+            if first_start:
+                already_tracked = await db.fetchval(
+                    """
+                    SELECT 1
+                    FROM onboarding_events
+                    WHERE user_id = $1 AND step = 'tutorial_battle_started'
+                    LIMIT 1
+                    """,
+                    int(user_id),
+                )
+                if not already_tracked:
+                    await db.track_onboarding_event(
+                        user_id,
+                        "tutorial_battle_started",
+                        True,
+                    )
+            coherent_state = await db.get_onboarding_state(user_id)
+            match_id = str(engine.match_id)
+            return web.json_response({
+                "success": True,
+                "match_id": match_id,
+                "redirect_url": f"/arena?id={match_id}&onboarding=1",
+                "state": engine.get_full_state(viewer_id=user_id),
+                "onboarding": _onboarding_payload_for_request(request, user_id, coherent_state),
+            })
 
     async def onboarding_tutorial_action_handler(request: web.Request) -> web.Response:
         try:
@@ -22507,8 +23218,6 @@ def create_web_app(
             payload = {}
         user_id = await require_user_id_from_payload(request, payload)
         await _ensure_onboarding_user(user_id)
-        state = await db.get_onboarding_state(user_id)
-        engine = await _ensure_tutorial_engine_for_user(request, user_id, state)
         action = {
             "type": payload.get("type") or payload.get("action"),
             "hand_index": payload.get("hand_index"),
@@ -22517,6 +23226,52 @@ def create_web_app(
             "target_id": payload.get("target_id"),
             "target_is_hero": bool(payload.get("target_is_hero")),
         }
+        engine = await _ensure_tutorial_engine_for_user(
+            request,
+            user_id,
+            allow_transition=True,
+        )
+        if engine is None:
+            state = await db.get_onboarding_state(user_id)
+            include_telegram_channel_task = _request_includes_telegram_channel_task(
+                request,
+                int(user_id),
+            )
+            action_type = str(action.get("type") or "")
+            if action_type == "complete" and (
+                state.get("completed")
+                or state.get("status") in (
+                    ONBOARDING_STATUS_MENU_TOUR,
+                    ONBOARDING_STATUS_COMPLETED,
+                )
+            ):
+                return web.json_response({
+                    "match_id": tutorial_match_id_for_user(user_id),
+                    "result": {
+                        "success": True,
+                        "tutorial_step": max(
+                            int(state.get("tutorial_step") or 0),
+                            TUTORIAL_FINAL_STEP,
+                        ),
+                        "game_over": True,
+                        "winner_id": int(user_id),
+                    },
+                    "redirect_url": "/?onboarding_menu=1",
+                    "onboarding": _build_onboarding_payload(
+                        state,
+                        include_telegram_channel_task=include_telegram_channel_task,
+                    ),
+                })
+            return web.json_response(
+                {
+                    "error": "tutorial_not_active",
+                    "onboarding": _build_onboarding_payload(
+                        state,
+                        include_telegram_channel_task=include_telegram_channel_task,
+                    ),
+                },
+                status=409,
+            )
         return await _handle_onboarding_tutorial_action(
             request,
             match_id=engine.match_id,
@@ -22535,59 +23290,76 @@ def create_web_app(
         step_id = str(payload.get("step_id") or payload.get("step") or "")
         if step_id not in ONBOARDING_MENU_STEPS:
             return web.json_response({"error": "invalid_menu_step"}, status=400)
-        state = await db.get_onboarding_state(user_id)
-        expected_step = str(state.get("menu_step") or "reward")
-        if state.get("status") != ONBOARDING_STATUS_MENU_TOUR or int(state.get("tutorial_step") or 0) < TUTORIAL_FINAL_STEP:
-            return web.json_response({"error": "menu_tour_not_ready", "onboarding": _onboarding_payload_for_request(request, user_id, state)}, status=409)
-        if expected_step == "done":
+        lock = _get_match_lock(tutorial_match_id_for_user(user_id))
+        async with lock:
+            # Read, validate, emit analytics, and persist the transition under
+            # the same per-user tutorial lock.  Two network retries can no
+            # longer both observe and complete the same step.
+            state = await db.get_onboarding_state(user_id)
+            expected_step = str(state.get("menu_step") or "reward")
+            if state.get("status") != ONBOARDING_STATUS_MENU_TOUR or int(state.get("tutorial_step") or 0) < TUTORIAL_FINAL_STEP:
+                return web.json_response({"error": "menu_tour_not_ready", "onboarding": _onboarding_payload_for_request(request, user_id, state)}, status=409)
+            if expected_step == "done":
+                return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, state)})
+            if step_id != expected_step:
+                # A retry of a step already committed by the first request is
+                # successful and side-effect free. Future/out-of-order steps
+                # remain a conflict.
+                if ONBOARDING_MENU_STEPS.index(step_id) < ONBOARDING_MENU_STEPS.index(expected_step):
+                    return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, state)})
+                return web.json_response({
+                    "error": "unexpected_menu_step",
+                    "expected_step": expected_step,
+                    "onboarding": _onboarding_payload_for_request(request, user_id, state),
+                }, status=409)
+            await db.track_onboarding_event(
+                user_id,
+                "menu_tour_step_completed",
+                True,
+                metadata={"step": step_id},
+            )
+            idx = ONBOARDING_MENU_STEPS.index(step_id)
+            next_step = ONBOARDING_MENU_STEPS[idx + 1] if idx + 1 < len(ONBOARDING_MENU_STEPS) else "done"
+            state = await db.set_onboarding_state(
+                user_id,
+                status=ONBOARDING_STATUS_MENU_TOUR,
+                current_step=ONBOARDING_STATUS_MENU_TOUR,
+                menu_step=next_step,
+            )
             return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, state)})
-        if step_id != expected_step:
-            return web.json_response({
-                "error": "unexpected_menu_step",
-                "expected_step": expected_step,
-                "onboarding": _onboarding_payload_for_request(request, user_id, state),
-            }, status=409)
-        await db.track_onboarding_event(
-            user_id,
-            "menu_tour_step_completed",
-            True,
-            metadata={"step": step_id},
-        )
-        idx = ONBOARDING_MENU_STEPS.index(step_id)
-        next_step = ONBOARDING_MENU_STEPS[idx + 1] if idx + 1 < len(ONBOARDING_MENU_STEPS) else "done"
-        state = await db.set_onboarding_state(
-            user_id,
-            status=ONBOARDING_STATUS_MENU_TOUR,
-            current_step=ONBOARDING_STATUS_MENU_TOUR,
-            menu_step=next_step,
-        )
-        return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, state)})
 
     async def onboarding_complete_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
-        current_state = await db.get_onboarding_state(user_id)
-        if current_state.get("completed"):
-            return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, current_state)})
-        if (
-            current_state.get("status") != ONBOARDING_STATUS_MENU_TOUR
-            or int(current_state.get("tutorial_step") or 0) < TUTORIAL_FINAL_STEP
-            or str(current_state.get("menu_step") or "") != "done"
-        ):
-            return web.json_response({
-                "error": "onboarding_not_ready",
-                "message": "Сначала завершите учебный бой и подсказки меню.",
-                "onboarding": _onboarding_payload_for_request(request, user_id, current_state),
-            }, status=409)
-        state = await db.set_onboarding_state(
-            user_id,
-            status=ONBOARDING_STATUS_COMPLETED,
-            current_step=ONBOARDING_STATUS_COMPLETED,
-            tutorial_step=TUTORIAL_FINAL_STEP,
-            menu_step="done",
-        )
-        await db.mark_welcome_shown(user_id)
-        await db.track_onboarding_event(user_id, "mandatory_onboarding_completed", True)
-        return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, state)})
+        lock = _get_match_lock(tutorial_match_id_for_user(user_id))
+        async with lock:
+            current_state = await db.get_onboarding_state(user_id)
+            if current_state.get("completed"):
+                return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, current_state)})
+            if (
+                current_state.get("status") != ONBOARDING_STATUS_MENU_TOUR
+                or int(current_state.get("tutorial_step") or 0) < TUTORIAL_FINAL_STEP
+                or str(current_state.get("menu_step") or "") != "done"
+            ):
+                return web.json_response({
+                    "error": "onboarding_not_ready",
+                    "message": "Сначала завершите учебный бой и подсказки меню.",
+                    "onboarding": _onboarding_payload_for_request(request, user_id, current_state),
+                }, status=409)
+            state = await db.set_onboarding_state(
+                user_id,
+                status=ONBOARDING_STATUS_COMPLETED,
+                current_step=ONBOARDING_STATUS_COMPLETED,
+                tutorial_step=TUTORIAL_FINAL_STEP,
+                menu_step="done",
+            )
+            await db.mark_welcome_shown(user_id)
+            await db.track_onboarding_event(
+                user_id,
+                "mandatory_onboarding_completed",
+                True,
+                metadata={"source": "menu_tour"},
+            )
+            return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, state)})
 
     async def onboarding_newbie_path_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
@@ -23936,12 +24708,15 @@ def create_web_app(
                 _prune_finished_match_runtime()
                 await _prune_matchmaker_cache(app)
                 _prune_action_result_cache()
+                await _evict_idle_onboarding_tutorial_runtimes(app)
 
                 # Получаем копию активных матчей для безопасной итерации
                 matches_to_check = list(ACTIVE_MATCHES.items())
 
                 for match_id, engine in matches_to_check:
                     try:
+                        if _is_onboarding_tutorial_engine(engine):
+                            continue
                         # Пропускаем завершённые матчи
                         if hasattr(engine, 'is_ended') and engine.is_ended:
                             continue
@@ -24067,8 +24842,37 @@ def create_web_app(
         except asyncio.CancelledError:
             pass
 
+    async def _android_release_upload_cleanup_loop(app: web.Application) -> None:
+        """Bound disk use from abandoned resumable Android uploads."""
+        logger = logging.getLogger(__name__)
+        try:
+            while True:
+                await asyncio.sleep(900)
+                try:
+                    result = await app["android_release_service"].cleanup_expired_uploads(limit=200)
+                    if result.get("expired"):
+                        logger.info("Expired Android uploads cleaned: %s", result)
+                except Exception:
+                    logger.warning("Android upload cleanup failed", exc_info=True)
+        except asyncio.CancelledError:
+            pass
+
     async def start_background_tasks(app: web.Application) -> None:
         """Запуск фоновых задач при старте сервера."""
+        release_service = app.get("android_release_service")
+        release_cleanup = getattr(release_service, "cleanup_expired_uploads", None)
+        release_config = getattr(release_service, "config", None)
+        release_cleanup_enabled = bool(
+            callable(release_cleanup) and bool(getattr(release_config, "enabled", False))
+        )
+        if release_cleanup_enabled:
+            try:
+                await release_cleanup(limit=200)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Android upload startup cleanup failed",
+                    exc_info=True,
+                )
         try:
             await _run_v5_dataset_maintenance(
                 app,
@@ -24086,6 +24890,10 @@ def create_web_app(
         app['v5_dataset_maintenance_task'] = asyncio.create_task(
             _v5_dataset_maintenance_loop(app)
         )
+        if release_cleanup_enabled:
+            app['android_release_upload_cleanup_task'] = asyncio.create_task(
+                _android_release_upload_cleanup_loop(app)
+            )
 
     async def cleanup_background_tasks(app: web.Application) -> None:
         """Остановка фоновых задач при остановке сервера."""
@@ -24120,6 +24928,12 @@ def create_web_app(
             app['v5_dataset_maintenance_task'].cancel()
             try:
                 await app['v5_dataset_maintenance_task']
+            except asyncio.CancelledError:
+                pass
+        if 'android_release_upload_cleanup_task' in app:
+            app['android_release_upload_cleanup_task'].cancel()
+            try:
+                await app['android_release_upload_cleanup_task']
             except asyncio.CancelledError:
                 pass
 

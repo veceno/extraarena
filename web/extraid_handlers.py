@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import hmac
 import html as _html
@@ -48,6 +50,7 @@ _BCRYPT_PASSWORD_MAX_BYTES = 72
 _EMAIL_VERIFY_TTL_SECONDS = 15 * 60
 _PASSWORD_RESET_TTL_SECONDS = 30 * 60
 _EMAIL_VERIFY_CODE_RE = re.compile(r"^\d{6}$")
+_ANONYMOUS_BOOTSTRAP_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 _GENERIC_EMAIL_STATUS = "if_account_exists_email_sent"
 _TELEGRAM_TRANSFER_PURPOSE = "telegram_transfer"
 _EXTRAID_RECONCILE_BATCH_SIZE = 100
@@ -219,6 +222,40 @@ def _make_jwt_session(user_id: int, session_id, settings) -> tuple[str, datetime
 
 def _hash_jwt(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _decode_anonymous_bootstrap_value(value: Any) -> bytes | None:
+    encoded = str(value or "").strip()
+    if not _ANONYMOUS_BOOTSTRAP_RE.fullmatch(encoded):
+        return None
+    try:
+        decoded = base64.urlsafe_b64decode(encoded + "=")
+    except (ValueError, binascii.Error):
+        return None
+    if len(decoded) != 32:
+        return None
+    canonical = base64.urlsafe_b64encode(decoded).decode("ascii").rstrip("=")
+    return decoded if hmac.compare_digest(canonical, encoded) else None
+
+
+def _anonymous_bootstrap_secret_hash(
+    bootstrap_id: str,
+    bootstrap_secret: str,
+) -> str:
+    bootstrap_id_bytes = _decode_anonymous_bootstrap_value(bootstrap_id)
+    bootstrap_secret_bytes = _decode_anonymous_bootstrap_value(bootstrap_secret)
+    if bootstrap_id_bytes is None or bootstrap_secret_bytes is None:
+        raise ValueError("invalid_anonymous_bootstrap")
+    message = (
+        b"extraarena-anonymous-bootstrap-v1\0"
+        + bootstrap_id_bytes
+        + bootstrap_secret_bytes
+    )
+    # Both values carry 256 bits from SecureRandom.  A domain-separated digest
+    # is a safe verifier and deliberately does not depend on JWT_SECRET: key
+    # rotation invalidates JWTs, so coupling the only recovery credential to
+    # that same key would strand anonymous installations.
+    return hashlib.sha256(message).hexdigest()
 
 
 def _parse_telegram_id(value: Any) -> int | None:
@@ -667,17 +704,42 @@ async def _issue_account_email(
         action_url=action_url,
         cancel_url=cancel_url,
     )
-    delivered = await _send_extraid_email(
-        request,
-        to_email=str(extra["email"]),
-        subject=subject,
-        text=text,
-        html=html,
+    extraid_db = _get_extraid_db(request)
+    delivery_guard = getattr(
+        extraid_db,
+        "account_email_delivery_guard",
+        None,
     )
-    if not delivered:
-        await _get_extraid_db(request).revoke_account_action_token(token_id)
+    if delivery_guard is not None:
+        token_ids = [token_id]
         if cancel_token_id is not None:
-            await _get_extraid_db(request).revoke_account_action_token(
+            token_ids.append(cancel_token_id)
+        async with delivery_guard(
+            extra_account_id=extra["id"],
+            email_snapshot=str(extra["email"]),
+            token_ids=token_ids,
+        ) as delivery_allowed:
+            delivered = bool(delivery_allowed) and await _send_extraid_email(
+                request,
+                to_email=str(extra["email"]),
+                subject=subject,
+                text=text,
+                html=html,
+            )
+    else:
+        # Kept for narrow test doubles; the production database always exposes
+        # the guard after schema v5 initialization.
+        delivered = await _send_extraid_email(
+            request,
+            to_email=str(extra["email"]),
+            subject=subject,
+            text=text,
+            html=html,
+        )
+    if not delivered:
+        await extraid_db.revoke_account_action_token(token_id)
+        if cancel_token_id is not None:
+            await extraid_db.revoke_account_action_token(
                 cancel_token_id
             )
     return delivered
@@ -818,6 +880,78 @@ async def extraid_register_handler(request: web.Request) -> web.Response:
                     identity_subject = str(user_id)
                 existing_extra = await extraid_db.get_any_extra_account_by_user_id(user_id)
                 if existing_extra:
+                    pending_retry = (
+                        existing_extra.get("deleted_at") is None
+                        and bool(
+                            existing_extra.get("email_verification_required")
+                        )
+                        and not bool(existing_extra.get("is_email_verified"))
+                        and str(existing_extra.get("email") or "")
+                        .strip()
+                        .lower()
+                        == email
+                    )
+                    password_matches = False
+                    if pending_retry:
+                        try:
+                            password_matches = await asyncio.to_thread(
+                                lambda: bcrypt.checkpw(
+                                    password.encode("utf-8"),
+                                    str(existing_extra["password_hash"]).encode(
+                                        "utf-8"
+                                    ),
+                                )
+                            )
+                        except (KeyError, TypeError, ValueError):
+                            password_matches = False
+                    if password_matches:
+                        # The first request may have committed and lost its
+                        # HTTP response.  Reuse the pending credential owned by
+                        # this bearer and durably request another code instead
+                        # of stranding the installation on a 409.
+                        if existing_extra.get("link_state"):
+                            return web.json_response(
+                                {"error": "account_reconcile_pending"},
+                                status=409,
+                            )
+                        primary_link = await db.ensure_extra_account_link(
+                            user_id=int(user_id),
+                            extra_account_id=existing_extra["id"],
+                            auth_source=auth_source,
+                        )
+                        if primary_link != "linked":
+                            try:
+                                await extraid_db.mark_primary_link_reconcile_required(
+                                    existing_extra["id"],
+                                    user_id=int(user_id),
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "Failed to persist idempotent registration owner conflict account=%s user=%s",
+                                    existing_extra["id"],
+                                    user_id,
+                                )
+                            return web.json_response(
+                                {"error": "account_reconcile_pending"},
+                                status=409,
+                            )
+                        await extraid_db.enqueue_account_email_action(
+                            email,
+                            "verify_email",
+                        )
+                        return web.json_response(
+                            {
+                                "ok": True,
+                                "display_id": existing_extra["display_id"],
+                                "email_sent": False,
+                                "email_queued": True,
+                                "email_verification_required": True,
+                                "linked_telegram": False,
+                                "linked_max": auth_source == "max",
+                                "reg_bonus": False,
+                                "idempotent_replay": True,
+                            }
+                        )
                     return web.json_response({
                         "error": "extraid_already_exists",
                         "display_id": existing_extra["display_id"],
@@ -950,6 +1084,7 @@ async def extraid_register_handler(request: web.Request) -> web.Response:
             raise
 
         email_sent = False
+        email_queued = False
         if _email_delivery_available(request):
             email_sent = await _issue_account_email(
                 request,
@@ -965,11 +1100,13 @@ async def extraid_register_handler(request: web.Request) -> web.Response:
                     email,
                     "verify_email",
                 )
+                email_queued = True
 
         return web.json_response({
             "ok": True,
             "display_id": display_id,
             "email_sent": email_sent,
+            "email_queued": email_queued,
             "email_verification_required": True,
             "linked_telegram": auth_source == "telegram",
             "linked_max": auth_source == "max",
@@ -990,6 +1127,35 @@ async def _compensate_synthetic_user_cleanup(db: Database, user_id: int, created
             logger.error("Compensating synthetic user delete returned false user=%s", user_id)
     except Exception:
         logger.warning("Compensating delete_user failed for synthetic user=%s", user_id, exc_info=True)
+
+
+async def _await_cross_db_reconciliation(awaitable):
+    """Finish a cross-DB readback/cleanup even if the request is cancelled.
+
+    Returns ``(result, cancellation)`` so callers can restore cancellation only
+    after the durable ownership decision has completed.  The child task is
+    shielded from every cancellation delivered to the HTTP handler.
+    """
+    task = asyncio.create_task(awaitable)
+    cancellation = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancellation = cancellation or exc
+    if task.cancelled():
+        raise asyncio.CancelledError()
+    return task.result(), cancellation
+
+
+async def _cleanup_synthetic_user_after_failed_cross_db_write(
+    db: Database,
+    user_id: int,
+) -> asyncio.CancelledError | None:
+    _, cancellation = await _await_cross_db_reconciliation(
+        _compensate_synthetic_user_cleanup(db, int(user_id), True)
+    )
+    return cancellation
 
 
 async def _rollback_created_extra_account(
@@ -1136,12 +1302,12 @@ async def extraid_login_handler(request: web.Request) -> web.Response:
         token, _ = _make_jwt_session(user_id, session_uuid, settings)
         token_hash = _hash_jwt(token)
 
-        await extraid_db.execute(
-            """
-            INSERT INTO auth_sessions (session_id, user_id, auth_method, token_hash, expires_at, device_label)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            """,
-            session_uuid, user_id, "email_password", token_hash, session_exp, data.get("device_label")
+        await extraid_db.create_email_password_session(
+            session_id=session_uuid,
+            user_id=int(user_id),
+            token_hash=token_hash,
+            expires_at=session_exp,
+            device_label=data.get("device_label"),
         )
         reg_bonus = await _claim_registration_bonus(db, extraid_db, extra)
 
@@ -1189,31 +1355,238 @@ async def anonymous_auth_handler(request: web.Request) -> web.Response:
                 "message": "Никнейм: 3-20 символов, только a-z, A-Z, 0-9, _, -",
             }, status=400)
 
+        bootstrap_id = str(data.get("bootstrap_id") or "").strip()
+        bootstrap_secret = str(data.get("bootstrap_secret") or "").strip()
+        has_bootstrap = bool(bootstrap_id or bootstrap_secret)
+        if has_bootstrap and not (bootstrap_id and bootstrap_secret):
+            return web.json_response(
+                {"error": "invalid_bootstrap"},
+                status=400,
+            )
+        bootstrap_secret_hash = None
+        if has_bootstrap:
+            try:
+                bootstrap_secret_hash = _anonymous_bootstrap_secret_hash(
+                    bootstrap_id,
+                    bootstrap_secret,
+                )
+            except ValueError:
+                return web.json_response(
+                    {"error": "invalid_bootstrap"},
+                    status=400,
+                )
+
+            bootstrap = await extraid_db.get_anonymous_auth_bootstrap(
+                bootstrap_id
+            )
+            proposed_user_id = None
+            if bootstrap is None:
+                proposed_user_id = await _allocate_synthetic_user(
+                    db,
+                    extraid_db,
+                    first_name=nickname,
+                )
+                claim_cancellation = None
+                try:
+                    await db.execute(
+                        "UPDATE users SET auth_source = 'android_anonymous' WHERE user_id = $1",
+                        proposed_user_id,
+                    )
+                    bootstrap = await extraid_db.claim_anonymous_auth_bootstrap(
+                        bootstrap_id=bootstrap_id,
+                        secret_hash=bootstrap_secret_hash,
+                        proposed_user_id=proposed_user_id,
+                    )
+                except (Exception, asyncio.CancelledError) as claim_error:
+                    # A connection can fail or the request can be cancelled
+                    # after COMMIT but before claim() returns.  Read the ledger
+                    # back before deciding whether the primary user is orphaned.
+                    try:
+                        bootstrap, readback_cancellation = (
+                            await _await_cross_db_reconciliation(
+                                extraid_db.get_anonymous_auth_bootstrap(
+                                    bootstrap_id
+                                )
+                            )
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Anonymous bootstrap claim readback failed id_hash=%s",
+                            hashlib.sha256(bootstrap_id.encode()).hexdigest()[:12],
+                        )
+                        # Unknown is not proof that claim failed.  Never delete
+                        # a primary user while the ExtraID commit is ambiguous.
+                        raise claim_error
+                    claim_cancellation = (
+                        claim_error
+                        if isinstance(claim_error, asyncio.CancelledError)
+                        else readback_cancellation
+                    )
+                    if bootstrap is None:
+                        cleanup_cancellation = (
+                            await _cleanup_synthetic_user_after_failed_cross_db_write(
+                                db,
+                                proposed_user_id,
+                            )
+                        )
+                        if claim_cancellation is not None:
+                            raise claim_cancellation
+                        if cleanup_cancellation is not None:
+                            raise cleanup_cancellation
+                        raise claim_error
+                if int(bootstrap["user_id"]) != int(proposed_user_id):
+                    # A concurrent retry won the bootstrap mapping.  Its game
+                    # user is authoritative; the local candidate is empty.
+                    cleanup_cancellation = (
+                        await _cleanup_synthetic_user_after_failed_cross_db_write(
+                            db,
+                            proposed_user_id,
+                        )
+                    )
+                    if cleanup_cancellation is not None:
+                        claim_cancellation = (
+                            claim_cancellation or cleanup_cancellation
+                        )
+                if claim_cancellation is not None:
+                    raise claim_cancellation
+            if not hmac.compare_digest(
+                str(bootstrap["secret_hash"]),
+                bootstrap_secret_hash,
+            ):
+                return web.json_response(
+                    {"error": "invalid_bootstrap"},
+                    status=401,
+                )
+            if bootstrap.get("disabled_at") is not None:
+                return web.json_response(
+                    {"error": "bootstrap_upgraded"},
+                    status=409,
+                )
+
+            user_id = int(bootstrap["user_id"])
+            session_uuid = uuid.uuid4()
+            token, session_exp = _make_jwt_session(
+                user_id,
+                session_uuid,
+                settings,
+            )
+            session_result = (
+                await extraid_db.create_anonymous_bootstrap_session(
+                    bootstrap_id=bootstrap_id,
+                    secret_hash=bootstrap_secret_hash,
+                    session_id=session_uuid,
+                    token_hash=_hash_jwt(token),
+                    expires_at=session_exp,
+                    device_label=data.get("device_label"),
+                )
+            )
+            if session_result.get("status") == "bootstrap_upgraded":
+                return web.json_response(
+                    {"error": "bootstrap_upgraded"},
+                    status=409,
+                )
+            if session_result.get("status") != "created":
+                return web.json_response(
+                    {"error": "invalid_bootstrap"},
+                    status=401,
+                )
+            # The transactional session rotation above rechecks disabled_at
+            # while holding the bootstrap row lock. Only mutate the primary
+            # game profile after that eligibility check succeeds; otherwise a
+            # concurrent ExtraID upgrade could reject the stale bootstrap yet
+            # still let it rename the newly protected user.
+            #
+            # Possession of an eligible installation secret authorizes
+            # recovery of this still-anonymous owner. Registration-first may
+            # have used an Arena######## placeholder; accepting a later
+            # nickname without persisting it would strand that profile.
+            await db.execute(
+                "UPDATE users SET first_name = $1 WHERE user_id = $2",
+                nickname,
+                user_id,
+            )
+            return web.json_response(
+                {
+                    "ok": True,
+                    "token": token,
+                    "user_id": user_id,
+                    "anonymous": True,
+                    "nickname": nickname,
+                    "bootstrap_generation": int(
+                        session_result["generation"]
+                    ),
+                }
+            )
+
         user_id = await _allocate_synthetic_user(
             db,
             extraid_db,
             first_name=nickname,
         )
-
-        await db.execute(
-            "UPDATE users SET auth_source = 'android_anonymous' WHERE user_id = $1",
-            user_id,
-        )
-
         session_uuid = uuid.uuid4()
         token, session_exp = _make_jwt_session(user_id, session_uuid, settings)
-        await extraid_db.execute(
-            """
-            INSERT INTO auth_sessions (session_id, user_id, auth_method, token_hash, expires_at, device_label)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            """,
-            session_uuid,
-            user_id,
-            "android_anonymous",
-            _hash_jwt(token),
-            session_exp,
-            data.get("device_label"),
-        )
+        try:
+            await db.execute(
+                "UPDATE users SET auth_source = 'android_anonymous' WHERE user_id = $1",
+                user_id,
+            )
+            await extraid_db.execute(
+                """
+                INSERT INTO auth_sessions (session_id, user_id, auth_method, token_hash, expires_at, device_label)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                """,
+                session_uuid,
+                user_id,
+                "android_anonymous",
+                _hash_jwt(token),
+                session_exp,
+                data.get("device_label"),
+            )
+        except (Exception, asyncio.CancelledError) as session_write_error:
+            try:
+                session_row, readback_cancellation = (
+                    await _await_cross_db_reconciliation(
+                        extraid_db.fetchrow(
+                            """
+                            SELECT session_id, user_id, auth_method
+                            FROM auth_sessions
+                            WHERE session_id = $1
+                            """,
+                            session_uuid,
+                        )
+                    )
+                )
+            except Exception:
+                logger.exception(
+                    "Anonymous session readback failed session_id=%s",
+                    session_uuid,
+                )
+                # As with bootstrap claims, ambiguous ExtraID state must never
+                # trigger deletion of the primary user.
+                raise session_write_error
+            session_committed = bool(
+                session_row
+                and int(session_row["user_id"]) == int(user_id)
+                and str(session_row["auth_method"]) == "android_anonymous"
+            )
+            if not session_committed:
+                cleanup_cancellation = (
+                    await _cleanup_synthetic_user_after_failed_cross_db_write(
+                        db,
+                        user_id,
+                    )
+                )
+                if isinstance(session_write_error, asyncio.CancelledError):
+                    raise session_write_error
+                if readback_cancellation is not None:
+                    raise readback_cancellation
+                if cleanup_cancellation is not None:
+                    raise cleanup_cancellation
+                raise session_write_error
+            if isinstance(session_write_error, asyncio.CancelledError):
+                raise session_write_error
+            if readback_cancellation is not None:
+                raise readback_cancellation
 
         return web.json_response({
             "ok": True,
@@ -1863,8 +2236,13 @@ async def extraid_unverified_email_change_handler(request: web.Request) -> web.R
         "telegram",
     ):
         return web.json_response({"error": "invalid_auth"}, status=401)
+    if not _email_delivery_available(request):
+        return web.json_response(
+            {"error": "email_delivery_unavailable"},
+            status=503,
+        )
     old_email = str(extra["email"])
-    result = await extraid_db.change_unverified_email(
+    result = await extraid_db.change_unverified_email_and_enqueue_verification(
         extra["id"],
         new_email=new_email,
         expected_old_email=old_email,
@@ -1873,28 +2251,11 @@ async def extraid_unverified_email_change_handler(request: web.Request) -> web.R
         return web.json_response({"error": "email_taken"}, status=409)
     if result != "changed":
         return web.json_response({"error": "email_change_not_allowed"}, status=409)
-    changed_extra = dict(extra)
-    changed_extra["email"] = new_email
-    if not await _issue_account_email(
-        request,
-        changed_extra,
-        purpose="verify_email",
-    ):
-        rollback = await extraid_db.change_unverified_email(
-            extra["id"],
-            new_email=old_email,
-            expected_old_email=new_email,
-        )
-        if rollback != "changed":
-            logger.error(
-                "Failed to rollback undelivered ExtraID email change account=%s",
-                extra["id"],
-            )
-        return web.json_response({"error": "email_delivery_failed"}, status=503)
     return web.json_response(
         {
             "ok": True,
-            "email_sent": True,
+            "email_sent": False,
+            "email_queued": True,
             "email_verification_required": True,
         }
     )

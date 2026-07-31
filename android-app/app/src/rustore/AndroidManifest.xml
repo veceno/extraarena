@@ -29,7 +29,9 @@
             android:name="ru.rustore.sdk.console_app_id"
             android:value="${console_app_id_value}" />
 
-        <activity android:name=".MainActivity">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />

@@ -21,6 +21,11 @@ DEFAULT_ANDROID_LATEST_VERSION_CODE = 45
 DEFAULT_ANDROID_LATEST_VERSION_NAME = "0.4.5"
 DEFAULT_ANDROID_UPDATE_CHANNEL_URL = "https://t.me/extraarenamobile"
 DEFAULT_ANDROID_APK_URL = "https://apk.laveqox.ru"
+DEFAULT_ANDROID_RELEASE_STORAGE_DIR = str(BASE_DIR / "releases" / "android")
+DEFAULT_ANDROID_RELEASE_PACKAGE_NAME = "ru.extraarena.app"
+DEFAULT_ANDROID_RELEASE_MAX_BYTES = 1024 * 1024 * 1024
+DEFAULT_ANDROID_RELEASE_CHUNK_BYTES = 8 * 1024 * 1024
+DEFAULT_ANDROID_UPLOAD_TOKEN_TTL_SECONDS = 60 * 60
 DEFAULT_RUSTORE_CONSOLE_APP_ID = "2063712624"
 DEFAULT_RUSTORE_APP_URL = "https://www.rustore.ru/catalog/app/ru.extraarena.app"
 DEFAULT_PAYMENT_PROVIDER_ORDER = "robokassa,yookassa,rustore,stars"
@@ -436,6 +441,17 @@ class Settings:
     android_min_supported_version_code: int = DEFAULT_ANDROID_LATEST_VERSION_CODE
     android_update_channel_url: str = DEFAULT_ANDROID_UPDATE_CHANNEL_URL
     android_apk_url: str = DEFAULT_ANDROID_APK_URL
+    android_releases_enabled: bool = True
+    android_release_storage_dir: str = DEFAULT_ANDROID_RELEASE_STORAGE_DIR
+    android_release_public_base_url: str = ""
+    android_release_package_name: str = DEFAULT_ANDROID_RELEASE_PACKAGE_NAME
+    android_direct_signing_cert_sha256: str = ""
+    android_rustore_signing_cert_sha256: str = ""
+    android_apksigner_command: str = "apksigner"
+    android_aapt_command: str = "aapt2"
+    android_release_max_bytes: int = DEFAULT_ANDROID_RELEASE_MAX_BYTES
+    android_release_chunk_bytes: int = DEFAULT_ANDROID_RELEASE_CHUNK_BYTES
+    android_upload_token_ttl_seconds: int = DEFAULT_ANDROID_UPLOAD_TOKEN_TTL_SECONDS
     match_state_backend: str = "memory"
     web_concurrency: int = 1
     auto_migrate_on_start: bool = True
@@ -471,6 +487,25 @@ def _origin_from_url(url: str) -> str:
     if not parsed.scheme or not parsed.netloc:
         return ""
     return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _https_origin_from_url(url: str) -> str:
+    text = str(url or "").strip()
+    if not text or "\\" in text or any(ord(character) < 32 or ord(character) == 127 for character in text):
+        return ""
+    try:
+        parsed = urlsplit(text)
+        _ = parsed.port
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return ""
+    return f"https://{parsed.netloc}"
 
 
 def _database_settings_from_env(
@@ -622,6 +657,16 @@ def get_settings() -> Settings:
         raise RuntimeError("BOT_TOKEN env var is required (not set in .env or environment)")
     webapp_url = os.getenv("WEBAPP_URL", DEFAULT_WEBAPP_URL)
     extra_shop_url = os.getenv("EXTRA_SHOP_URL", DEFAULT_EXTRA_SHOP_URL)
+    android_release_public_base_url_raw = os.getenv("ANDROID_RELEASE_PUBLIC_BASE_URL", "").strip()
+    if android_release_public_base_url_raw:
+        android_release_public_base_url = _https_origin_from_url(android_release_public_base_url_raw)
+        if not android_release_public_base_url:
+            raise RuntimeError("ANDROID_RELEASE_PUBLIC_BASE_URL must be an absolute HTTPS URL without credentials.")
+    else:
+        android_release_public_base_url = (
+            _https_origin_from_url(os.getenv("PUBLIC_BASE_URL", ""))
+            or _https_origin_from_url(webapp_url)
+        )
     max_bot_token = os.getenv("MAX_BOT_TOKEN", "").strip()
     max_bot_webhook_secret = os.getenv("MAX_BOT_WEBHOOK_SECRET", "").strip()
     max_bot_username = os.getenv("MAX_BOT_USERNAME", "").strip().lstrip("@")
@@ -848,6 +893,32 @@ def get_settings() -> Settings:
         )),
         android_update_channel_url=os.getenv("EXTRAARENA_UPDATE_CHANNEL_URL", DEFAULT_ANDROID_UPDATE_CHANNEL_URL),
         android_apk_url=os.getenv("EXTRAARENA_APK_URL", DEFAULT_ANDROID_APK_URL),
+        android_releases_enabled=_env_bool("ANDROID_RELEASES_ENABLED", True),
+        android_release_storage_dir=os.getenv(
+            "ANDROID_RELEASE_STORAGE_DIR",
+            DEFAULT_ANDROID_RELEASE_STORAGE_DIR,
+        ),
+        android_release_public_base_url=android_release_public_base_url,
+        android_release_package_name=os.getenv(
+            "ANDROID_RELEASE_PACKAGE_NAME",
+            DEFAULT_ANDROID_RELEASE_PACKAGE_NAME,
+        ).strip(),
+        android_direct_signing_cert_sha256=os.getenv("ANDROID_DIRECT_SIGNING_CERT_SHA256", "").strip(),
+        android_rustore_signing_cert_sha256=os.getenv("ANDROID_RUSTORE_SIGNING_CERT_SHA256", "").strip(),
+        android_apksigner_command=os.getenv("ANDROID_APKSIGNER_COMMAND", "apksigner").strip(),
+        android_aapt_command=os.getenv("ANDROID_AAPT_COMMAND", "aapt2").strip(),
+        android_release_max_bytes=int(os.getenv(
+            "ANDROID_RELEASE_MAX_BYTES",
+            str(DEFAULT_ANDROID_RELEASE_MAX_BYTES),
+        )),
+        android_release_chunk_bytes=int(os.getenv(
+            "ANDROID_RELEASE_CHUNK_BYTES",
+            str(DEFAULT_ANDROID_RELEASE_CHUNK_BYTES),
+        )),
+        android_upload_token_ttl_seconds=int(os.getenv(
+            "ANDROID_UPLOAD_TOKEN_TTL_SECONDS",
+            str(DEFAULT_ANDROID_UPLOAD_TOKEN_TTL_SECONDS),
+        )),
         match_state_backend=match_state_backend,
         web_concurrency=web_concurrency,
         auto_migrate_on_start=auto_migrate_on_start,

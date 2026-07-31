@@ -61,6 +61,70 @@ def test_menu_tour_highlights_only_required_sections_and_finishes_to_newbie_path
     assert "busy={onboardingTourSaving}" in source
 
 
+def test_newbie_path_action_reserves_mobile_layout_space_and_hides_under_overlays():
+    source = INDEX.read_text(encoding="utf-8")
+    css = source.split(".newbie-path-floating {", 1)[1].split(
+        "@keyframes tipSwap",
+        1,
+    )[0]
+    app_block = source.split("const App = () =>", 1)[1]
+    overlay_line = source.split("const hasOverlay =", 1)[1].split(";", 1)[0]
+    floating_block = source.split(
+        "{onboarding?.completed && newbiePathRemaining > 0 && !hasOverlay && (",
+        1,
+    )[1].split("{!showAI && !showGenerator", 1)[0]
+
+    assert "@media (max-width: 520px)" in source
+    assert "position: static;" in css
+    assert "right: auto;" in css
+    assert "bottom: auto;" in css
+    assert "width: auto;" in css
+    assert "height: 46px;" in css
+    assert "min-height: 46px;" in css
+    assert "margin: 6px calc(12px + var(--ea-safe-right)) 6px calc(12px + var(--ea-safe-left));" in css
+    assert "align-self: stretch;" in css
+    assert "flex-shrink: 0;" in css
+    assert "border-radius: 12px;" in css
+    assert ".newbie-path-floating:focus-visible" in source
+    assert 'data-newbie-path-floating="true"' in floating_block
+    assert "Открыть Путь новичка: осталось задач" in floating_block
+    assert "newbie-path-floating__label" in floating_block
+    assert app_block.index('data-newbie-path-floating="true"') < app_block.index("{/* Main content */}")
+    assert app_block.index('data-newbie-path-floating="true"') < app_block.index("<BottomNav")
+
+    for overlay_signal in [
+        "squadsOpen",
+        "communityOpen",
+        "showAI",
+        "showGenerator",
+        "showQuests",
+        "showMenu",
+        "showSettings",
+        "showBattlePick",
+        "showGameMode",
+        "showMail",
+        "showNews",
+        "showCaseOpen",
+        "showInfo",
+        "showGloryPath",
+        "showLeagueInfo",
+        "showBattlePass",
+        "showPreBattle",
+        "showSupport",
+        "showInvite",
+        "showBattles",
+        "showFriends",
+        "showProfile",
+        "showExtraID",
+        "onboardingBlocking",
+        "onboardingTourActive",
+        "newbiePathOpen",
+        "!!seasonResetNotice",
+        "!!pendingCaseOpen",
+    ]:
+        assert overlay_signal in overlay_line
+
+
 def test_arena_tutorial_overlay_is_wired_to_state_actions_and_feedback():
     markup = ARENA_HTML.read_text(encoding="utf-8")
     script = ARENA_JS.read_text(encoding="utf-8")
@@ -345,6 +409,17 @@ def test_onboarding_server_guards_ordering_and_newbie_rewards():
     assert "except Exception:" in claim_user_case_block
     assert 'await db.mark_newbie_path_task(user_id, "open_starter_case", claimed=False)' in claim_user_case_block
     assert "newbie path user_case completion failed" in claim_user_case_block
+
+
+def test_onboarding_transition_analytics_are_server_canonical_only():
+    source = INDEX.read_text(encoding="utf-8")
+    server = SERVER.read_text(encoding="utf-8")
+
+    assert "__analytics?.onboarding('welcome_completed'" not in source
+    assert "__analytics?.onboarding('mandatory_onboarding_completed'" not in source
+    assert "CANONICAL_ONBOARDING_TRANSITION_EVENTS" in server
+    assert 'metadata={"source": "onboarding_gate"}' in server
+    assert 'metadata={"source": "menu_tour"}' in server
 
 
 def test_payload_auth_helper_accepts_query_auth_for_arena_post_actions():

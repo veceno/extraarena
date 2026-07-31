@@ -64,7 +64,7 @@ from infrastructure.notifications import (
 
 
 # Версию схемы повышаем при изменении структуры таблиц
-SCHEMA_VERSION = 52
+SCHEMA_VERSION = 55
 RLHF_V5_STORAGE_SCHEMA = "rlhf_v5_storage_v1"
 EXTRAARENA_V5_DATASET_EXPORT_SCHEMA = "extraarena_v5_dataset_export_v1"
 V5_PSEUDONYMIZED_RECORD_ID_SCHEME = "random_per_export_record_ids_v1"
@@ -1911,6 +1911,7 @@ class Database:
         battle_v5_trace_changed = await self._ensure_battle_v5_trace_tables()
         admin_actions_changed = await self._ensure_admin_account_actions_table()
         mcp_admin_changed = await self._ensure_mcp_admin_tables()
+        android_releases_changed = await self._ensure_android_release_tables()
         cosmetics_changed = await self._ensure_cosmetic_tables()
         user_cases_changed = await self._ensure_user_cases_table()
         match_mode_overrides_changed = await self._ensure_match_mode_overrides_table()
@@ -1979,6 +1980,7 @@ class Database:
             or battle_v5_trace_changed
             or admin_actions_changed
             or mcp_admin_changed
+            or android_releases_changed
             or cosmetics_changed
             or user_cases_changed
             or match_mode_overrides_changed
@@ -20537,6 +20539,218 @@ class Database:
         changed |= await self._ensure_mcp_rate_limits_table()
         return changed
 
+    async def _ensure_android_release_tables(self) -> bool:
+        """Create durable Android release, artifact, channel and upload state."""
+        table_names = (
+            "android_release_channels",
+            "android_releases",
+            "android_release_artifacts",
+            "android_release_uploads",
+        )
+        existed = {
+            name: bool(await self.fetchval(f"SELECT to_regclass('public.{name}')"))
+            for name in table_names
+        }
+        changed = not all(existed.values())
+
+        await self.execute(
+            """
+            CREATE TABLE IF NOT EXISTS android_release_channels (
+                channel TEXT PRIMARY KEY,
+                package_name TEXT NOT NULL,
+                latest_release_id TEXT,
+                latest_version_code BIGINT NOT NULL DEFAULT 0 CHECK (latest_version_code >= 0),
+                min_supported_version_code BIGINT NOT NULL DEFAULT 0 CHECK (min_supported_version_code >= 0),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CHECK (channel IN ('direct', 'rustore')),
+                CHECK (min_supported_version_code <= latest_version_code OR latest_version_code = 0)
+            )
+            """
+        )
+        await self.execute(
+            """
+            CREATE OR REPLACE FUNCTION prevent_android_release_floor_decrease()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                IF NEW.min_supported_version_code < OLD.min_supported_version_code THEN
+                    RAISE EXCEPTION 'android release required floor cannot decrease'
+                        USING ERRCODE = '23514';
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql
+            """
+        )
+        await self.execute(
+            "DROP TRIGGER IF EXISTS android_release_floor_monotonic ON android_release_channels"
+        )
+        await self.execute(
+            """
+            CREATE TRIGGER android_release_floor_monotonic
+            BEFORE UPDATE OF min_supported_version_code ON android_release_channels
+            FOR EACH ROW EXECUTE FUNCTION prevent_android_release_floor_decrease()
+            """
+        )
+        await self.execute(
+            """
+            CREATE TABLE IF NOT EXISTS android_releases (
+                release_id TEXT PRIMARY KEY,
+                channel TEXT NOT NULL REFERENCES android_release_channels(channel),
+                version_code BIGINT NOT NULL CHECK (version_code > 0),
+                version_name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'staged',
+                required_at_publish BOOLEAN NOT NULL DEFAULT FALSE,
+                required_floor_after_publish BIGINT,
+                release_notes TEXT NOT NULL DEFAULT '',
+                created_by BIGINT NOT NULL,
+                published_by BIGINT,
+                retired_by BIGINT,
+                retire_reason TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                published_at TIMESTAMPTZ,
+                retired_at TIMESTAMPTZ,
+                UNIQUE (channel, version_code),
+                CHECK (status IN ('staged', 'published', 'superseded', 'retired'))
+            )
+            """
+        )
+        await self.execute(
+            """
+            CREATE TABLE IF NOT EXISTS android_release_artifacts (
+                artifact_id TEXT PRIMARY KEY,
+                release_id TEXT NOT NULL REFERENCES android_releases(release_id) ON DELETE RESTRICT,
+                artifact_kind TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                storage_key TEXT NOT NULL UNIQUE,
+                size_bytes BIGINT NOT NULL CHECK (size_bytes > 0),
+                sha256 TEXT NOT NULL CHECK (sha256 ~ '^[0-9a-f]{64}$'),
+                package_name TEXT NOT NULL,
+                version_code BIGINT NOT NULL CHECK (version_code > 0),
+                version_name TEXT NOT NULL,
+                signing_cert_sha256 TEXT,
+                verified BOOLEAN NOT NULL DEFAULT FALSE,
+                verifier_result JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (release_id, artifact_kind),
+                CHECK (artifact_kind IN ('apk', 'aab'))
+            )
+            """
+        )
+        await self.execute(
+            """
+            CREATE TABLE IF NOT EXISTS android_release_uploads (
+                upload_id TEXT PRIMARY KEY,
+                channel TEXT NOT NULL REFERENCES android_release_channels(channel),
+                artifact_kind TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                expected_size_bytes BIGINT NOT NULL CHECK (expected_size_bytes > 0),
+                expected_sha256 TEXT NOT NULL CHECK (expected_sha256 ~ '^[0-9a-f]{64}$'),
+                expected_version_code BIGINT NOT NULL CHECK (expected_version_code > 0),
+                expected_version_name TEXT NOT NULL,
+                release_notes TEXT NOT NULL DEFAULT '',
+                received_bytes BIGINT NOT NULL DEFAULT 0 CHECK (received_bytes >= 0),
+                temp_storage_key TEXT NOT NULL UNIQUE,
+                token_hash TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'uploading',
+                created_by BIGINT NOT NULL,
+                release_id TEXT REFERENCES android_releases(release_id) ON DELETE SET NULL,
+                token_expires_at TIMESTAMPTZ NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                finalized_at TIMESTAMPTZ,
+                aborted_at TIMESTAMPTZ,
+                CHECK (artifact_kind IN ('apk', 'aab')),
+                CONSTRAINT android_release_uploads_status_check
+                    CHECK (status IN ('uploading', 'finalizing', 'finalized', 'aborted', 'failed', 'expired')),
+                CHECK (received_bytes <= expected_size_bytes)
+            )
+            """
+        )
+        status_constraints = await self.fetch(
+            """
+            SELECT conname, pg_get_constraintdef(oid) AS definition
+            FROM pg_constraint
+            WHERE conrelid = 'public.android_release_uploads'::regclass
+              AND contype = 'c'
+              AND pg_get_constraintdef(oid) ILIKE '%status%'
+            """
+        )
+        valid_status_constraint = False
+        required_statuses = (
+            "uploading",
+            "finalizing",
+            "finalized",
+            "aborted",
+            "failed",
+            "expired",
+        )
+        for constraint in status_constraints:
+            definition = str(constraint.get("definition") or "").lower()
+            if all(status in definition for status in required_statuses):
+                valid_status_constraint = True
+                continue
+            constraint_name = str(constraint.get("conname") or "")
+            if not constraint_name:
+                continue
+            quoted_name = constraint_name.replace('"', '""')
+            await self.execute(
+                f'ALTER TABLE android_release_uploads DROP CONSTRAINT "{quoted_name}"'
+            )
+            changed = True
+        if not valid_status_constraint:
+            await self.execute(
+                """
+                ALTER TABLE android_release_uploads
+                ADD CONSTRAINT android_release_uploads_status_check
+                CHECK (status IN ('uploading', 'finalizing', 'finalized', 'aborted', 'failed', 'expired'))
+                """
+            )
+            changed = True
+        # Older cleanup builds could have used shared empty-string tombstones,
+        # which conflict with the UNIQUE constraints after the first row.
+        await self.execute(
+            """
+            UPDATE android_release_uploads
+            SET token_hash = 'expired:' || upload_id
+            WHERE status = 'expired' AND token_hash = ''
+            """
+        )
+        await self.execute(
+            """
+            UPDATE android_release_uploads
+            SET temp_storage_key = 'expired/' || upload_id || '.part'
+            WHERE status = 'expired' AND temp_storage_key = ''
+            """
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS android_releases_channel_status_version_idx
+            ON android_releases (channel, status, version_code DESC)
+            """
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS android_release_uploads_status_expiry_idx
+            ON android_release_uploads (status, token_expires_at)
+            """
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS android_release_artifacts_release_idx
+            ON android_release_artifacts (release_id, artifact_kind)
+            """
+        )
+        await self.execute(
+            """
+            INSERT INTO android_release_channels (channel, package_name)
+            VALUES ('direct', 'ru.extraarena.app'), ('rustore', 'ru.extraarena.app')
+            ON CONFLICT (channel) DO NOTHING
+            """
+        )
+        return changed
+
     async def _ensure_mcp_tool_calls_table(self) -> bool:
         changed = False
         table_exists = await self.fetchval("SELECT to_regclass('public.mcp_tool_calls')")
@@ -21008,6 +21222,39 @@ class Database:
             key_hash,
             int(admin_user_id),
             str(tool_name),
+        )
+        return _mcp_row_dict(row)
+
+    async def release_mcp_idempotency_key(
+        self,
+        *,
+        idempotency_key: str,
+        admin_user_id: int,
+        tool_name: str,
+        args_digest: str,
+    ) -> dict[str, Any] | None:
+        """Release only this call's uncommitted reservation after input rejection."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        key_hash = _mcp_scoped_idempotency_hash(idempotency_key, admin_user_id, tool_name)
+        if not key_hash:
+            raise ValueError("idempotency_key_required")
+        row = await self.fetchrow(
+            """
+            DELETE FROM mcp_idempotency_keys
+            WHERE key_hash = $1
+              AND admin_user_id = $2
+              AND tool_name = $3
+              AND args_digest = $4
+              AND status = 'in_progress'
+            RETURNING key_hash, admin_user_id, tool_name, args_digest, status,
+                      response_summary, error, jti_hash, created_at, updated_at, expires_at
+            """,
+            key_hash,
+            int(admin_user_id),
+            str(tool_name),
+            str(args_digest),
         )
         return _mcp_row_dict(row)
 
@@ -24387,12 +24634,12 @@ class Database:
             """
             UPDATE battle_v5_traces
             SET status = 'aborted',
-                abort_reason = $2,
+                abort_reason = $2::text,
                 aborted_at = NOW(),
                 updated_at = NOW(),
                 meta_json = meta_json || jsonb_build_object(
                     'collection_status', 'aborted',
-                    'abort_reason', $2
+                    'abort_reason', $2::text
                 )
             WHERE status = 'ongoing'
               AND updated_at < NOW() - ($1::double precision * INTERVAL '1 second')

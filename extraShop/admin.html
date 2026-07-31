@@ -55,6 +55,13 @@
       cursor: pointer;
     }
 
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.48;
+      filter: saturate(0.55);
+      box-shadow: none;
+    }
+
     .app {
       min-height: 100vh;
       display: grid;
@@ -324,6 +331,13 @@
     .table-head span {
       color: var(--muted);
       font-size: 12px;
+    }
+
+    .table-head > div {
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 8px;
     }
 
     .table-scroll {
@@ -730,6 +744,70 @@
       height: 15px;
     }
 
+    .release-upload-grid {
+      display: grid;
+      grid-template-columns: minmax(300px, 1.2fr) minmax(280px, 0.8fr);
+      gap: 14px;
+      align-items: stretch;
+    }
+
+    .release-dropzone {
+      min-height: 178px;
+      display: grid;
+      place-items: center;
+      gap: 8px;
+      padding: 22px;
+      border: 1px dashed rgba(167, 139, 250, 0.52);
+      border-radius: 10px;
+      color: var(--soft);
+      background: linear-gradient(145deg, rgba(167, 139, 250, 0.08), rgba(245, 146, 30, 0.05));
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .18s ease, background .18s ease, transform .18s ease;
+    }
+
+    .release-dropzone:hover,
+    .release-dropzone.dragging {
+      border-color: var(--orange);
+      background: linear-gradient(145deg, rgba(167, 139, 250, 0.14), rgba(245, 146, 30, 0.10));
+      transform: translateY(-1px);
+    }
+
+    .release-dropzone strong {
+      display: block;
+      font-family: var(--font-display);
+      font-size: 16px;
+    }
+
+    .release-progress {
+      height: 9px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(8, 7, 16, .8);
+    }
+
+    .release-progress > span {
+      display: block;
+      width: 0;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--purple), var(--orange));
+      box-shadow: 0 0 18px rgba(245, 146, 30, .35);
+      transition: width .16s ease;
+    }
+
+    .release-policy-note {
+      padding: 10px 12px;
+      border: 1px solid rgba(251, 191, 36, .24);
+      border-radius: 8px;
+      color: var(--soft);
+      background: rgba(251, 191, 36, .06);
+      font-size: 12px;
+    }
+
+    .release-policy-note strong { color: var(--gold); }
+
     .editor-layout {
       display: grid;
       grid-template-columns: minmax(0, 1fr) 360px;
@@ -875,6 +953,12 @@
     .switch.on::before {
       background: var(--green);
       transform: translateX(16px);
+    }
+
+    .switch.disabled {
+      pointer-events: none;
+      opacity: 0.42;
+      filter: saturate(0.4);
     }
 
     .checkbox-mark {
@@ -1676,6 +1760,10 @@
         font-size: 22px;
       }
     }
+
+    @media (max-width: 980px) {
+      .release-upload-grid { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -1690,9 +1778,10 @@
         <button class="nav-button" type="button" data-nav="squads"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.46"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Squads</button>
         <button class="nav-button" type="button" data-nav="promocodes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7"/><path d="M2 7h20v5H2z"/><path d="M12 22V7"/><path d="M12 7H7.5a2.5 2.5 0 1 1 0-5C11 2 12 7 12 7Z"/><path d="M12 7h4.5a2.5 2.5 0 1 0 0-5C13 2 12 7 12 7Z"/></svg>Promocodes</button>
         <button class="nav-button" type="button" data-nav="seasons"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 2v4"/><path d="M16 2v4"/><path d="M3 10h18"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="m8 15 2 2 4-5"/></svg>Seasons</button>
+        <button class="nav-button" type="button" data-nav="releases"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14a2 2 0 0 0 2-2v-3"/><path d="M3 16v3a2 2 0 0 0 2 2"/></svg>Android Releases</button>
         <button class="nav-button" type="button" data-nav="configs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21a2 2 0 0 1-4 0v-.09a1.7 1.7 0 0 0-.4-1.1 1.7 1.7 0 0 0-1-.6 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3a2 2 0 0 1 0-4h.09a1.7 1.7 0 0 0 1.1-.4 1.7 1.7 0 0 0 .6-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3a2 2 0 0 1 4 0v.09a1.7 1.7 0 0 0 .4 1.1 1.7 1.7 0 0 0 1 .6 1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.2.37.5.7.6 1 .25.37.7.6 1.1.6H21a2 2 0 0 1 0 4h-.09a1.7 1.7 0 0 0-1.1.4 1.7 1.7 0 0 0-.4 0Z"/></svg>Configs</button>
       </nav>
-      <div class="sidebar-footer"><strong>Admin panel</strong>Shop, players, analytics, promos &amp; configs</div>
+      <div class="sidebar-footer"><strong>Admin panel</strong>Shop, players, analytics, releases &amp; configs</div>
     </aside>
 
     <main>
@@ -2464,6 +2553,61 @@
         </section>
       </section>
 
+      <!-- ANDROID RELEASES VIEW -->
+      <section class="view" id="releases-view">
+        <header class="topbar">
+          <div><div class="title-kicker">Native delivery</div><h1>Android Releases</h1></div>
+          <div style="color:var(--muted);font-size:12px">Resumable upload · verified package and signature · monotonic required floor</div>
+          <button class="secondary" type="button" id="btn-releases-refresh">Reload</button>
+        </header>
+        <div id="releases-status" style="min-height:20px;margin-bottom:10px"></div>
+        <section class="metrics">
+          <article class="metric-card"><div class="metric-label"><span>Latest direct</span></div><div class="metric-value" id="release-latest" style="color:var(--purple)">—</div><div class="metric-note" id="release-latest-name">no published release</div></article>
+          <article class="metric-card"><div class="metric-label"><span>Required floor</span></div><div class="metric-value" id="release-floor" style="color:var(--orange)">—</div><div class="metric-note">never decreases on optional releases</div></article>
+          <article class="metric-card"><div class="metric-label"><span>Staged</span></div><div class="metric-value" id="release-staged" style="color:var(--gold)">—</div><div class="metric-note">waiting for publish</div></article>
+          <article class="metric-card"><div class="metric-label"><span>Verification</span></div><div class="metric-value" id="release-verified" style="color:var(--green)">—</div><div class="metric-note">apksigner + aapt2</div></article>
+        </section>
+
+        <section class="release-upload-grid">
+          <section class="panel-card">
+            <h3>Upload APK / AAB</h3>
+            <label class="release-dropzone" id="release-dropzone" for="release-file">
+              <input id="release-file" type="file" accept=".apk,.aab,application/vnd.android.package-archive" hidden>
+              <span style="font-size:30px">⇩</span>
+              <span><strong id="release-file-title">Drop a signed build here</strong><span id="release-file-meta" style="display:block;color:var(--muted);margin-top:5px">or click to select · streamed in bounded chunks</span></span>
+            </label>
+            <div style="margin-top:12px" class="release-progress"><span id="release-progress-bar"></span></div>
+            <div id="release-progress-copy" style="display:flex;justify-content:space-between;margin-top:6px;color:var(--muted);font-size:11px"><span>Ready</span><span>0%</span></div>
+            <div class="top-actions" style="justify-content:flex-start;margin-top:12px">
+              <button class="primary" type="button" id="btn-release-upload">Upload &amp; verify</button>
+              <button class="secondary" type="button" id="btn-release-pause" disabled>Pause</button>
+              <button class="danger" type="button" id="btn-release-cancel" disabled>Cancel</button>
+            </div>
+          </section>
+          <section class="panel-card">
+            <h3>Release metadata</h3>
+            <div class="form-grid">
+              <div class="field"><label>Channel</label><select id="release-channel"><option value="direct">Direct APK</option><option value="rustore">RuStore</option></select></div>
+              <div class="field"><label>Artifact</label><input id="release-kind" readonly value="APK"></div>
+              <div class="field"><label>Version code</label><input id="release-version-code" type="number" min="1" placeholder="49"></div>
+              <div class="field"><label>Version name</label><input id="release-version-name" placeholder="0.5.2"></div>
+              <div class="toggle"><span class="toggle-label">Mandatory update</span><span class="switch" id="release-required-switch" data-on="0"></span></div>
+              <div class="toggle"><span class="toggle-label">Publish after verification</span><span class="switch" id="release-auto-publish-switch" data-on="0"></span></div>
+              <div class="field full"><label>Release notes</label><textarea id="release-notes" rows="5" placeholder="Что изменилось в этой версии"></textarea></div>
+            </div>
+            <div class="release-policy-note" style="margin-top:12px"><strong>Required history is durable.</strong> If v10 was mandatory and v11 is optional, clients below v10 remain blocked and update straight to v11. AAB is staging/storage for an external console workflow only in V1; there is no publish or export action. RuStore releases can be published here only after that exact version is live in RuStore Console.</div>
+          </section>
+        </section>
+
+        <section class="table-shell" style="margin-top:16px">
+          <div class="table-head"><div><strong>Release history</strong><span id="release-count">loading...</span></div></div>
+          <div class="table-scroll"><table>
+            <thead><tr><th>Version</th><th>Channel</th><th>Status</th><th>Artifact</th><th>Verified</th><th>Policy</th><th>Published</th><th>Actions</th></tr></thead>
+            <tbody id="releases-tbody"><tr><td colspan="8" style="text-align:center;padding:24px;color:var(--muted)">Loading...</td></tr></tbody>
+          </table></div>
+        </section>
+      </section>
+
       <!-- CONFIGS VIEW -->
       <section class="view" id="configs-view">
         <header class="topbar">
@@ -2577,6 +2721,7 @@
 
       var cosmeticCatalog=[];
       var shopSets=[],rubleProducts=[],editingProduct=null,editingSet=null,editingCosmetic=null,isDirty=!1,loadError=null,editorRewards=[];
+      var androidReleaseState={file:null,uploadId:null,uploadToken:null,uploadUrl:null,chunkBytes:8*1024*1024,offset:0,paused:false,cancelled:false,resume:null,busy:false};
       var productOptions={item_types:[],package_types:{},shop_sets:[]},
           seasonsState={seasons:[],reward_tracks:[],reward_counts:{},overview:[],active:null,drafts:[],scheduled:[],presets:[]},
           selectedDraftId=null,selectedRewardSeasonId=null,
@@ -2585,7 +2730,7 @@
           $=function(s){return document.querySelector(s)},
           $$=function(s){return [].slice.call(document.querySelectorAll(s))};
 
-      function showView(n){['products-view','cosmetics-view','editor-view','product-editor-view','analytics-view','players-view','player-detail-view','squads-view','promocodes-view','seasons-view','configs-view','purchases-view'].forEach(function(id){$('#'+id).classList.toggle('active',id===n)});$$('[data-nav]').forEach(function(b){b.classList.toggle('active',b.dataset.nav===(n==='analytics-view'?'analytics':n==='cosmetics-view'?'cosmetics':n==='players-view'||n==='player-detail-view'?'players':n==='squads-view'?'squads':n==='promocodes-view'?'promocodes':n==='seasons-view'?'seasons':n==='configs-view'?'configs':n==='purchases-view'?'purchases':'products'))})}
+      function showView(n){['products-view','cosmetics-view','editor-view','product-editor-view','analytics-view','players-view','player-detail-view','squads-view','promocodes-view','seasons-view','releases-view','configs-view','purchases-view'].forEach(function(id){$('#'+id).classList.toggle('active',id===n)});$$('[data-nav]').forEach(function(b){b.classList.toggle('active',b.dataset.nav===(n==='analytics-view'?'analytics':n==='cosmetics-view'?'cosmetics':n==='players-view'||n==='player-detail-view'?'players':n==='squads-view'?'squads':n==='promocodes-view'?'promocodes':n==='seasons-view'?'seasons':n==='releases-view'?'releases':n==='configs-view'?'configs':n==='purchases-view'?'purchases':'products'))})}
       $('[data-nav="products"]').addEventListener('click',function(){showView('products-view')});
       $('[data-nav="cosmetics"]').addEventListener('click',function(){showView('cosmetics-view');loadCosmetics()});
       $('[data-nav="analytics"]').addEventListener('click',function(){showView('analytics-view');loadAnalytics()});
@@ -2593,6 +2738,7 @@
       $('[data-nav="squads"]').addEventListener('click',function(){showView('squads-view');loadSquadsAdmin()});
       $('[data-nav="promocodes"]').addEventListener('click',function(){showView('promocodes-view');loadPromocodes()});
       $('[data-nav="seasons"]').addEventListener('click',function(){showView('seasons-view');loadSeasons()});
+      $('[data-nav="releases"]').addEventListener('click',function(){showView('releases-view');loadAndroidReleases()});
       $('[data-nav="configs"]').addEventListener('click',function(){showView('configs-view');loadConfigs()});
       document.querySelectorAll('.btn-back-products').forEach(function(b){b.addEventListener('click',function(){showView('products-view')})});
       document.querySelectorAll('.btn-back-players').forEach(function(b){b.addEventListener('click',function(){showView('players-view');loadPlayersOverview()})});
@@ -4501,6 +4647,220 @@
           loadConfigs();
         }catch(e){toast('Mode update: '+escHtml(e.message),'error')}
       };
+
+      function releaseBytes(value){
+        var bytes=Number(value||0),units=['B','KB','MB','GB'],i=0;
+        while(bytes>=1024&&i<units.length-1){bytes/=1024;i++}
+        return(bytes>=100||i===0?bytes.toFixed(0):bytes.toFixed(1))+' '+units[i];
+      }
+
+      function setReleaseProgress(done,total,label){
+        var percent=total?Math.max(0,Math.min(100,done/total*100)):0;
+        $('#release-progress-bar').style.width=percent.toFixed(1)+'%';
+        $('#release-progress-copy').innerHTML='<span>'+escHtml(label||'Uploading')+' · '+releaseBytes(done)+' / '+releaseBytes(total)+'</span><span>'+percent.toFixed(0)+'%</span>';
+      }
+
+      function selectReleaseFile(file){
+        if(!file)return;
+        if(androidReleaseState.uploadId&&androidReleaseState.uploadToken){toast('Resume or cancel the current upload before choosing another file','info');return}
+        var lower=String(file.name||'').toLowerCase(),kind=lower.endsWith('.aab')?'aab':lower.endsWith('.apk')?'apk':'';
+        if(!kind){toast('Choose an .apk or .aab file','error');return}
+        androidReleaseState.file=file;
+        $('#release-kind').value=kind.toUpperCase();
+        $('#release-file-title').textContent=file.name;
+        $('#release-file-meta').textContent=releaseBytes(file.size)+' · '+kind.toUpperCase()+' · SHA-256 calculated on the server';
+        setReleaseProgress(0,file.size,'Ready');
+        syncReleaseAutoPublishControl();
+      }
+
+      function syncReleaseAutoPublishControl(){
+        var control=$('#release-auto-publish-switch'),channel=$('#release-channel').value,kind=$('#release-kind').value.toLowerCase();
+        var blocked=channel==='rustore'||kind!=='apk';
+        control.classList.toggle('disabled',blocked);control.setAttribute('aria-disabled',blocked?'true':'false');
+        control.title=blocked?(channel==='rustore'?'Publish only after the version is live in RuStore Console':'AAB is staging/storage only'):'';
+        if(blocked)setSwitch(control,false);
+      }
+
+      async function releaseChunkRequest(uploadUrl,blob,offset,token){
+        var headers={'Content-Type':'application/octet-stream','Upload-Offset':String(offset),'X-Android-Upload-Token':token};
+        if(AUTH_PARAM)headers.Authorization='Bearer '+AUTH_PARAM.value;
+        var response=await fetch(buildUrl(uploadUrl),{method:'PATCH',headers:headers,body:blob,credentials:'same-origin'});
+        var text=await response.text(),payload={};
+        try{payload=text?JSON.parse(text):{}}catch(_){payload={message:text}}
+        if(!response.ok){var error=new Error(payload.error||payload.message||'HTTP '+response.status),offsetHeader=response.headers.get('Upload-Offset');error.status=response.status;error.expectedOffset=offsetHeader===null?null:Number(offsetHeader);throw error}
+        return payload.data||{};
+      }
+
+      async function releaseUploadStatus(uploadId){
+        var response=await api('GET','/api/admin/android-releases/uploads/'+encodeURIComponent(uploadId));
+        return response.data||{};
+      }
+
+      function releaseRetryDelay(attempt){
+        return new Promise(function(resolve){setTimeout(resolve,Math.min(2400,350*Math.pow(2,attempt-1)))})
+      }
+
+      function releaseErrorText(error){
+        var raw=String(error&&error.message||error||'Unknown error').replace(/\s+/g,' ').trim();
+        if(/<!doctype|<html/i.test(raw))return'Android release API is unavailable. Check the deployed backend and admin session, then retry.';
+        return raw.length>240?raw.slice(0,237)+'...':raw;
+      }
+
+      async function waitForReleaseResume(){
+        if(!androidReleaseState.paused)return;
+        await new Promise(function(resolve){androidReleaseState.resume=resolve});
+        androidReleaseState.resume=null;
+      }
+
+      async function uploadAndroidRelease(){
+        if(androidReleaseState.busy)return;
+        var file=androidReleaseState.file,versionCode=parseInt($('#release-version-code').value),versionName=$('#release-version-name').value.trim();
+        if(!file){toast('Select an APK or AAB first','error');return}
+        if(!versionCode||versionCode<1||!versionName){toast('Version code and version name are required','error');return}
+        var kind=String(file.name).toLowerCase().endsWith('.aab')?'aab':'apk';
+        var channel=$('#release-channel').value;
+        if(kind!=='apk'&&!confirm('AAB is stored only for an external console workflow in V1. Upload it as a non-publishable staged artifact?'))return;
+        androidReleaseState.busy=true;androidReleaseState.cancelled=false;androidReleaseState.paused=false;
+        $('#btn-release-upload').disabled=true;$('#btn-release-pause').disabled=false;$('#btn-release-cancel').disabled=false;
+        $('#btn-release-pause').textContent='Pause';
+        var completed=false;
+        try{
+          if(!androidReleaseState.uploadId||!androidReleaseState.uploadToken){
+            var prepared=await api('POST','/api/admin/android-releases/uploads',{
+              channel:channel,artifact_kind:kind,filename:file.name,size_bytes:file.size,
+              version_code:versionCode,version_name:versionName,release_notes:$('#release-notes').value.trim()
+            });
+            var prep=prepared.data||{},upload=prep.upload||{};
+            androidReleaseState.uploadId=upload.upload_id;androidReleaseState.uploadToken=prep.upload_token;
+            androidReleaseState.uploadUrl=prep.upload_url;
+            androidReleaseState.chunkBytes=Number(prep.chunk_bytes||8*1024*1024);androidReleaseState.offset=Number(upload.received_bytes||0);
+          }else{
+            var resumed=await releaseUploadStatus(androidReleaseState.uploadId);
+            androidReleaseState.offset=Number(resumed.received_bytes||0);
+            androidReleaseState.uploadUrl=androidReleaseState.uploadUrl||'/api/admin/android-releases/uploads/'+encodeURIComponent(androidReleaseState.uploadId);
+            setReleaseProgress(androidReleaseState.offset,file.size,'Resuming');
+          }
+          var retryAttempt=0;
+          while(androidReleaseState.offset<file.size){
+            if(androidReleaseState.cancelled)throw new Error('upload_cancelled');
+            await waitForReleaseResume();
+            if(androidReleaseState.cancelled)throw new Error('upload_cancelled');
+            var end=Math.min(file.size,androidReleaseState.offset+androidReleaseState.chunkBytes);
+            try{
+              var result=await releaseChunkRequest(androidReleaseState.uploadUrl,file.slice(androidReleaseState.offset,end),androidReleaseState.offset,androidReleaseState.uploadToken);
+              androidReleaseState.offset=Number(result.received_bytes||end);retryAttempt=0;
+              setReleaseProgress(androidReleaseState.offset,file.size,'Uploading');
+            }catch(chunkError){
+              retryAttempt++;
+              var recoveredOffset=Number.isFinite(chunkError.expectedOffset)?chunkError.expectedOffset:null;
+              if(recoveredOffset===null){
+                try{var status=await releaseUploadStatus(androidReleaseState.uploadId);recoveredOffset=Number(status.received_bytes)}catch(_){}
+              }
+              if(!Number.isFinite(recoveredOffset)||recoveredOffset<0||recoveredOffset>file.size||retryAttempt>4)throw chunkError;
+              androidReleaseState.offset=recoveredOffset;
+              setReleaseProgress(recoveredOffset,file.size,'Connection interrupted · resuming');
+              await releaseRetryDelay(retryAttempt);
+            }
+          }
+          setReleaseProgress(file.size,file.size,'Verifying package and signature');
+          $('#btn-release-pause').disabled=true;$('#btn-release-cancel').disabled=true;
+          var finalized=await api('POST','/api/admin/android-releases/uploads/'+encodeURIComponent(androidReleaseState.uploadId)+'/finalize',{});
+          var release=((finalized.data||{}).release)||{};
+          if(release.verified)toast('Build verified and staged','success');
+          else toast('Build staged, but publish is blocked until verification passes','info');
+          await loadAndroidReleases();
+          setReleaseProgress(file.size,file.size,'Staged');
+          if(release.verified&&channel==='direct'&&kind==='apk'&&$('#release-auto-publish-switch').dataset.on==='1'){
+            await window.publishAndroidRelease(release.release_id,Number(release.version_code),$('#release-required-switch').dataset.on==='1');
+          }
+          completed=true;
+        }catch(e){
+          if(e.message!=='upload_cancelled'){
+            var uploadError=releaseErrorText(e);
+            $('#releases-status').innerHTML='<div style="color:var(--red);font-size:12px;background:rgba(239,68,68,.08);padding:8px 12px;border-radius:6px;border:1px solid rgba(239,68,68,.22)">Upload error: '+escHtml(uploadError)+'</div>';
+            toast('Release upload: '+uploadError,'error');
+          }
+        }finally{
+          androidReleaseState.busy=false;
+          if(completed||androidReleaseState.cancelled){androidReleaseState.uploadId=null;androidReleaseState.uploadToken=null;androidReleaseState.uploadUrl=null;androidReleaseState.offset=0}
+          var resumable=!!(androidReleaseState.uploadId&&androidReleaseState.uploadToken);
+          $('#btn-release-upload').disabled=false;$('#btn-release-upload').textContent=resumable?'Resume upload':'Upload & verify';$('#btn-release-pause').disabled=true;$('#btn-release-cancel').disabled=!resumable;
+        }
+      }
+
+      async function loadAndroidReleases(){
+        $('#releases-status').innerHTML='';
+        $('#releases-tbody').innerHTML='<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--muted)">Loading...</td></tr>';
+        try{
+          var response=await api('GET','/api/admin/android-releases',null,{limit:200,include_retired:true});
+          var rows=((response.data||{}).releases)||[],direct=rows.filter(function(r){return r.channel==='direct'});
+          var channelRow=direct[0]||{},latest=direct.find(function(r){return r.release_id===r.latest_release_id})||null;
+          $('#release-latest').textContent=latest?'v'+fmtNum(latest.version_code):'—';
+          $('#release-latest-name').textContent=latest?(latest.version_name||'published'):'no published release';
+          $('#release-floor').textContent=channelRow.min_supported_version_code!=null?'v'+fmtNum(channelRow.min_supported_version_code):'—';
+          $('#release-staged').textContent=fmtNum(rows.filter(function(r){return r.status==='staged'}).length);
+          $('#release-verified').textContent=fmtNum(rows.filter(function(r){return r.verified}).length)+' / '+fmtNum(rows.length);
+          $('#release-count').textContent=rows.length+' releases';
+          if(!rows.length){$('#releases-tbody').innerHTML='<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--muted)">No releases yet</td></tr>';return}
+          $('#releases-tbody').innerHTML=rows.map(function(r){
+            var statusClass=r.status==='published'?'active':r.status==='staged'?'draft':'hidden';
+            var kinds=(Array.isArray(r.artifact_kinds)&&r.artifact_kinds.length?r.artifact_kinds:[r.artifact_kind]).filter(Boolean).map(function(kind){return String(kind).toUpperCase()});
+            var hasApk=kinds.indexOf('APK')!==-1;
+            var artifact=escHtml(kinds.join(' + ')||'—')+(r.size_bytes?' · '+releaseBytes(r.size_bytes):'');
+            var hash=r.sha256?'<br><code style="font-size:10px;color:var(--muted)">'+escHtml(String(r.sha256).slice(0,12))+'…</code>':'';
+            var verify=r.verified?'<span style="color:var(--green)">verified</span>':'<span style="color:var(--red)">blocked</span>';
+            var floor=r.required_floor_after_publish!=null?'floor v'+fmtNum(r.required_floor_after_publish):'not published';
+            var policy=r.status==='staged'?'—':(r.required_at_publish?'<span style="color:var(--orange)">required</span>':'optional')+'<br><span style="font-size:11px;color:var(--muted)">'+floor+'</span>';
+            var actions='';
+            if(r.status==='staged'&&r.verified&&hasApk){actions='<div class="actions"><button class="secondary" style="font-size:11px;padding:3px 8px" onclick="publishAndroidRelease('+jsString(r.release_id)+','+Number(r.version_code)+',false,'+jsString(r.channel)+')">Publish optional</button><button class="primary" style="font-size:11px;padding:3px 8px" onclick="publishAndroidRelease('+jsString(r.release_id)+','+Number(r.version_code)+',true,'+jsString(r.channel)+')">Publish required</button></div>'}
+            else if(r.status==='staged'&&r.verified){actions='<span style="font-size:11px;color:var(--muted)">APK required to publish</span>'}
+            else if(r.status==='staged'){actions='<span style="font-size:11px;color:var(--muted)">verification required</span>'}
+            else if(r.status!=='retired'){actions='<button class="danger" style="font-size:11px;padding:3px 8px" onclick="retireAndroidRelease('+jsString(r.release_id)+','+Number(r.version_code)+')">Retire</button>'}
+            else actions='<span style="font-size:11px;color:var(--muted)">retired</span>';
+            return'<tr><td><strong>v'+fmtNum(r.version_code)+'</strong><br><span style="color:var(--muted);font-size:11px">'+escHtml(r.version_name||'')+'</span></td><td><span class="badge">'+escHtml(r.channel||'')+'</span></td><td><span class="status '+statusClass+'">'+escHtml(r.status||'')+'</span></td><td>'+artifact+hash+'</td><td>'+verify+'</td><td>'+policy+'</td><td>'+fmtDate(r.published_at||r.created_at)+'</td><td>'+actions+'</td></tr>';
+          }).join('');
+        }catch(e){
+          $('#releases-status').innerHTML='<div style="color:var(--red);font-size:12px;background:rgba(239,68,68,.08);padding:8px 12px;border-radius:6px;border:1px solid rgba(239,68,68,.22)">Releases error: '+escHtml(releaseErrorText(e))+'</div>';
+          $('#releases-tbody').innerHTML='<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--muted)">Error</td></tr>';
+        }
+      }
+
+      window.publishAndroidRelease=async function(releaseId,versionCode,required,channel){
+        var rustore=channel==='rustore';
+        var expected=rustore?'RUSTORE LIVE '+versionCode:String(versionCode);
+        var typed=prompt(rustore?'Confirm version '+versionCode+' is already available to users in RuStore Console. Type '+expected+':':'Type version code '+versionCode+' to publish this '+(required?'REQUIRED':'optional')+' update:');
+        if(String(typed||'')!==expected)return;
+        try{await api('POST','/api/admin/android-releases/'+encodeURIComponent(releaseId)+'/publish',{required:!!required,expected_version_code:Number(versionCode),store_release_confirmed:rustore});toast('Release published'+(required?' · required floor advanced':''),'success');loadAndroidReleases()}
+        catch(e){toast('Publish blocked: '+e.message,'error')}
+      };
+
+      window.retireAndroidRelease=async function(releaseId,versionCode){
+        var typed=prompt('Type RETIRE '+versionCode+' to retire this release without lowering the required floor:');
+        if(String(typed||'')!=='RETIRE '+versionCode)return;
+        var reason=prompt('Audit reason:');if(!String(reason||'').trim())return;
+        try{await api('POST','/api/admin/android-releases/'+encodeURIComponent(releaseId)+'/retire',{expected_version_code:Number(versionCode),reason:String(reason).trim()});toast('Release retired','success');loadAndroidReleases()}
+        catch(e){toast('Retire blocked: '+e.message,'error')}
+      };
+
+      $('#release-file').addEventListener('change',function(){selectReleaseFile(this.files&&this.files[0])});
+      ['dragenter','dragover'].forEach(function(name){$('#release-dropzone').addEventListener(name,function(event){event.preventDefault();this.classList.add('dragging')})});
+      ['dragleave','drop'].forEach(function(name){$('#release-dropzone').addEventListener(name,function(event){event.preventDefault();this.classList.remove('dragging');if(name==='drop')selectReleaseFile(event.dataTransfer.files&&event.dataTransfer.files[0])})});
+      $('#btn-release-upload').addEventListener('click',uploadAndroidRelease);
+      $('#btn-releases-refresh').addEventListener('click',loadAndroidReleases);
+      $('#release-channel').addEventListener('change',syncReleaseAutoPublishControl);
+      ['release-required-switch','release-auto-publish-switch'].forEach(function(id){$('#'+id).addEventListener('click',function(){if(this.classList.contains('disabled'))return;setSwitch(this,this.dataset.on!=='1')})});
+      $('#btn-release-pause').addEventListener('click',function(){
+        androidReleaseState.paused=!androidReleaseState.paused;this.textContent=androidReleaseState.paused?'Resume':'Pause';
+        if(!androidReleaseState.paused&&androidReleaseState.resume)androidReleaseState.resume();
+      });
+      $('#btn-release-cancel').addEventListener('click',async function(){
+        androidReleaseState.cancelled=true;androidReleaseState.paused=false;if(androidReleaseState.resume)androidReleaseState.resume();
+        if(androidReleaseState.uploadId){try{await api('POST','/api/admin/android-releases/uploads/'+encodeURIComponent(androidReleaseState.uploadId)+'/abort',{})}catch(_){}}
+        androidReleaseState.uploadId=null;androidReleaseState.uploadToken=null;androidReleaseState.uploadUrl=null;androidReleaseState.offset=0;
+        $('#btn-release-upload').textContent='Upload & verify';$('#btn-release-cancel').disabled=true;
+        setReleaseProgress(0,(androidReleaseState.file||{}).size||0,'Cancelled');toast('Upload cancelled','info');
+      });
+      syncReleaseAutoPublishControl();
 
       // Init
       loadAll();

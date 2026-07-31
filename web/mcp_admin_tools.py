@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from infrastructure.android_releases import AndroidReleaseError, AndroidReleaseService
 from infrastructure.database import SQUAD_SETTINGS_DEFAULTS
 from infrastructure.case_config import (
     CASE_CONFIG_FIELDS,
@@ -2658,6 +2659,139 @@ async def adapter_upload_cosmetic_image(app: Any, admin_user_id: int, args: dict
     return {"dry_run": False, **payload}
 
 
+def _android_release_service(app: Any) -> AndroidReleaseService:
+    service = app.get("android_release_service")
+    if service is None:
+        raise MCPToolInputError("android_release_service_unavailable")
+    return service
+
+
+async def _android_release_call(awaitable: Any) -> dict[str, Any]:
+    try:
+        result = await awaitable
+    except AndroidReleaseError as exc:
+        raise MCPToolInputError(exc.code) from exc
+    return json_safe(result)
+
+
+async def adapter_list_android_releases(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
+    service = _android_release_service(app)
+    return await _android_release_call(
+        service.list_releases(
+            channel=args.get("channel"),
+            limit=_int_arg(args, "limit", 100, minimum=1, maximum=200),
+            offset=_int_arg(args, "offset", 0, minimum=0, maximum=1_000_000),
+            include_retired=_bool_arg(args, "include_retired", True),
+        )
+    )
+
+
+async def adapter_read_android_release(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
+    release_id = _str_arg(args, "release_id", "", max_length=80)
+    if not release_id:
+        raise MCPToolInputError("release_id_required")
+    return await _android_release_call(_android_release_service(app).read_release(release_id))
+
+
+async def adapter_manage_android_release_upload(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
+    service = _android_release_service(app)
+    action = _str_arg(args, "action", "", max_length=20).lower()
+    reason = _str_arg(args, "reason", "", max_length=500)
+    if not reason:
+        raise MCPToolInputError("android_release_upload_reason_required")
+    dry_run = _bool_arg(args, "dry_run", False)
+    if action == "prepare":
+        required_fields = (
+            "channel",
+            "artifact_kind",
+            "filename",
+            "size_bytes",
+            "sha256",
+            "version_code",
+            "version_name",
+        )
+        if any(args.get(name) in {None, ""} for name in required_fields):
+            raise MCPToolInputError("android_release_prepare_fields_required")
+        result = await _android_release_call(
+            service.prepare_upload(
+                channel=args.get("channel"),
+                artifact_kind=args.get("artifact_kind"),
+                filename=args.get("filename"),
+                size_bytes=args.get("size_bytes"),
+                sha256=args.get("sha256"),
+                version_code=args.get("version_code"),
+                version_name=args.get("version_name"),
+                release_notes=args.get("release_notes") or "",
+                admin_user_id=int(admin_user_id),
+                dry_run=dry_run,
+            )
+        )
+        # MCP callers reuse their existing narrowly-scoped MCP bearer on the
+        # PATCH upload URL. Never let a second credential enter MCP response,
+        # audit, confirmation, or idempotency payloads.
+        result.pop("upload_token", None)
+        if not dry_run:
+            result["upload_authentication"] = "Authorization: Bearer <current MCP token>"
+        return result
+    upload_id = _str_arg(args, "upload_id", "", max_length=80)
+    if not upload_id:
+        raise MCPToolInputError("upload_id_required")
+    if action == "finalize":
+        return await _android_release_call(
+            service.finalize_upload(
+                upload_id=upload_id,
+                admin_user_id=int(admin_user_id),
+                dry_run=dry_run,
+            )
+        )
+    if action == "abort":
+        return await _android_release_call(
+            service.abort_upload(
+                upload_id=upload_id,
+                admin_user_id=int(admin_user_id),
+                dry_run=dry_run,
+            )
+        )
+    raise MCPToolInputError("unsupported_android_release_upload_action")
+
+
+async def adapter_publish_android_release(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
+    release_id = _str_arg(args, "release_id", "", max_length=80)
+    reason = _str_arg(args, "reason", "", max_length=500)
+    if not release_id:
+        raise MCPToolInputError("release_id_required")
+    if not reason:
+        raise MCPToolInputError("android_release_publish_reason_required")
+    return await _android_release_call(
+        _android_release_service(app).publish_release(
+            release_id=release_id,
+            required=_bool_arg(args, "required", False),
+            expected_version_code=_int_arg(args, "expected_version_code", 0, minimum=1),
+            store_release_confirmed=_bool_arg(args, "store_release_confirmed", False),
+            admin_user_id=int(admin_user_id),
+            dry_run=_bool_arg(args, "dry_run", False),
+        )
+    )
+
+
+async def adapter_retire_android_release(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
+    release_id = _str_arg(args, "release_id", "", max_length=80)
+    reason = _str_arg(args, "reason", "", max_length=500)
+    if not release_id:
+        raise MCPToolInputError("release_id_required")
+    if not reason:
+        raise MCPToolInputError("android_release_retire_reason_required")
+    return await _android_release_call(
+        _android_release_service(app).retire_release(
+            release_id=release_id,
+            expected_version_code=_int_arg(args, "expected_version_code", 0, minimum=1),
+            admin_user_id=int(admin_user_id),
+            reason=reason,
+            dry_run=_bool_arg(args, "dry_run", False),
+        )
+    )
+
+
 ADAPTERS = {
     "adapter_read_runtime_status": adapter_read_runtime_status,
     "adapter_read_runtime_config": adapter_read_runtime_config,
@@ -2724,6 +2858,11 @@ ADAPTERS = {
     "adapter_execute_squad_action": adapter_execute_squad_action,
     "adapter_upload_product_image": adapter_upload_product_image,
     "adapter_upload_cosmetic_image": adapter_upload_cosmetic_image,
+    "adapter_list_android_releases": adapter_list_android_releases,
+    "adapter_read_android_release": adapter_read_android_release,
+    "adapter_manage_android_release_upload": adapter_manage_android_release_upload,
+    "adapter_publish_android_release": adapter_publish_android_release,
+    "adapter_retire_android_release": adapter_retire_android_release,
 }
 ADMIN_TOOL_ADAPTERS = ADAPTERS
 

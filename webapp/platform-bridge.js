@@ -1,5 +1,6 @@
 (function () {
   const MAX_SESSION_KEY = 'max_game_session_token';
+  const PLATFORM_SESSION_KEY = 'extraarena_launch_platform';
   const telegram = () => window.Telegram && window.Telegram.WebApp;
   const max = () => window.WebApp;
 
@@ -9,11 +10,88 @@
     && app.initData.trim()
   );
 
+  const platformFromUrl = (rawUrl) => {
+    if (!rawUrl) return null;
+    try {
+      const url = new URL(String(rawUrl), window.location.href);
+      const hash = new URLSearchParams(url.hash.replace(/^#/, ''));
+      const telegramMarker = hash.get('tgWebAppData');
+      const maxMarker = hash.get('WebAppData');
+      if (telegramMarker === null && maxMarker === null) return null;
+      if (telegramMarker !== null && maxMarker !== null) return 'web';
+      if (telegramMarker !== null) {
+        return (
+          telegramMarker.trim()
+          && hasInitData(telegram())
+          && telegramMarker === telegram().initData
+        ) ? 'telegram' : 'web';
+      }
+      return (
+        maxMarker.trim()
+        && hasInitData(max())
+        && maxMarker === max().initData
+      ) ? 'max' : 'web';
+    } catch (_) {
+      return null;
+    }
+  };
+
+  const explicitLaunchPlatform = () => {
+    const current = platformFromUrl(window.location.href);
+    if (current) return current;
+    try {
+      const navigation = window.performance?.getEntriesByType?.('navigation')?.[0];
+      return platformFromUrl(navigation?.name);
+    } catch (_) {
+      return null;
+    }
+  };
+
+  const getStoredLaunchPlatform = () => {
+    try {
+      const value = sessionStorage.getItem(PLATFORM_SESSION_KEY);
+      return value === 'telegram' || value === 'max' ? value : null;
+    } catch (_) {
+      return null;
+    }
+  };
+
+  const rememberLaunchPlatform = (value) => {
+    if (value !== 'telegram' && value !== 'max') return;
+    try { sessionStorage.setItem(PLATFORM_SESSION_KEY, value); } catch (_) {}
+  };
+
+  const clearLaunchPlatform = () => {
+    try { sessionStorage.removeItem(PLATFORM_SESSION_KEY); } catch (_) {}
+  };
+
+  const resolvePlatform = () => {
+    const explicit = explicitLaunchPlatform();
+    if (explicit) {
+      if (explicit === 'web') clearLaunchPlatform();
+      else rememberLaunchPlatform(explicit);
+      return explicit;
+    }
+
+    // Full-page navigation to /arena drops the Mini App launch hash. Only our
+    // own marker may carry the already resolved platform across that boundary.
+    const stored = getStoredLaunchPlatform();
+    if (stored) return stored;
+
+    const hasTelegramInitData = hasInitData(telegram());
+    const hasMaxInitData = hasInitData(max());
+    if (hasTelegramInitData === hasMaxInitData) {
+      // Both SDKs restore initData from their own sessionStorage. When both are
+      // populated without an explicit launch marker, choosing either identity
+      // would risk authenticating the wrong platform account.
+      return 'web';
+    }
+    return hasTelegramInitData ? 'telegram' : 'max';
+  };
+
   const api = {
     kind() {
-      if (hasInitData(max())) return 'max';
-      if (hasInitData(telegram())) return 'telegram';
-      return 'web';
+      return resolvePlatform();
     },
 
     isMax() {
@@ -25,14 +103,14 @@
     },
 
     getInitData() {
-      if (this.isMax()) return max().initData;
-      if (this.isTelegram()) return telegram().initData;
+      const app = this.isMax() ? max() : (this.isTelegram() ? telegram() : null);
+      if (hasInitData(app)) return app.initData;
       return null;
     },
 
     getUnsafeUser() {
-      if (this.isMax()) return max().initDataUnsafe && max().initDataUnsafe.user;
-      if (this.isTelegram()) return telegram().initDataUnsafe && telegram().initDataUnsafe.user;
+      const app = this.isMax() ? max() : (this.isTelegram() ? telegram() : null);
+      if (app) return app.initDataUnsafe && app.initDataUnsafe.user;
       return null;
     },
 
@@ -50,13 +128,15 @@
       if (!this.isMax()) return null;
       if (this._authPromise) return this._authPromise;
       this._authPromise = (async () => {
+        const maxApp = max();
+        if (!hasInitData(maxApp)) throw new Error('max_init_data_missing');
         const response = await fetch('/api/auth/max', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           cache: 'no-store',
           body: JSON.stringify({
-            init_data: max().initData,
-            device_label: `MAX ${max().platform || 'Mini App'} ${max().version || ''}`.trim(),
+            init_data: maxApp.initData,
+            device_label: `MAX ${maxApp.platform || 'Mini App'} ${maxApp.version || ''}`.trim(),
           }),
         });
         const payload = await response.json().catch(() => ({}));
@@ -72,7 +152,7 @@
     },
 
     ready() {
-      const app = this.isMax() ? max() : telegram();
+      const app = this.isMax() ? max() : (this.isTelegram() ? telegram() : null);
       try { app && app.ready && app.ready(); } catch (_) {}
       try { app && app.expand && app.expand(); } catch (_) {}
     },
@@ -80,7 +160,7 @@
     openLink(url) {
       const href = String(url || '');
       if (!href) return false;
-      const app = this.isMax() ? max() : telegram();
+      const app = this.isMax() ? max() : (this.isTelegram() ? telegram() : null);
       try {
         if (this.isTelegram() && /^https:\/\/t\.me\//i.test(href) && app.openTelegramLink) {
           app.openTelegramLink(href);
@@ -106,7 +186,7 @@
     },
 
     close() {
-      const app = this.isMax() ? max() : telegram();
+      const app = this.isMax() ? max() : (this.isTelegram() ? telegram() : null);
       try {
         if (app && app.close) {
           app.close();
@@ -117,17 +197,17 @@
     },
 
     impact(style) {
-      const app = this.isMax() ? max() : telegram();
+      const app = this.isMax() ? max() : (this.isTelegram() ? telegram() : null);
       try { app && app.HapticFeedback && app.HapticFeedback.impactOccurred(style || 'light'); } catch (_) {}
     },
 
     notification(type) {
-      const app = this.isMax() ? max() : telegram();
+      const app = this.isMax() ? max() : (this.isTelegram() ? telegram() : null);
       try { app && app.HapticFeedback && app.HapticFeedback.notificationOccurred(type); } catch (_) {}
     },
 
     selection() {
-      const app = this.isMax() ? max() : telegram();
+      const app = this.isMax() ? max() : (this.isTelegram() ? telegram() : null);
       try { app && app.HapticFeedback && app.HapticFeedback.selectionChanged(); } catch (_) {}
     },
   };
