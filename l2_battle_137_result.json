@@ -1,0 +1,19 @@
+{
+  "agent_idx": 137,
+  "seed": 8137,
+  "starting_player": "v4_max",
+  "match_id": "m_e8c6aac70400",
+  "group_id": "e70b34582e1a",
+  "winner_id": 2000,
+  "winner_side": "p2",
+  "turns_played": 9,
+  "my_actions": 8,
+  "plays": 2,
+  "attacks": 1,
+  "face_attacks": 1,
+  "end_turns": 5,
+  "mana_draws": 0,
+  "my_hp_end": 21,
+  "opp_hp_end": 39,
+  "transport": "raw_pipe + claude_subprocess_per_move"
+}
