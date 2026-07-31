@@ -1068,6 +1068,31 @@ async def test_card_image_preview_variant_falls_back_to_original(monkeypatch, tm
 
 
 @pytest.mark.asyncio
+async def test_maintenance_allows_card_images_but_keeps_collection_closed():
+    db = SecurityFakeDB()
+
+    async def maintenance_config():
+        return {
+            "maintenance_mode": {"enabled": True},
+            "feature_availability": {},
+            "disabled_card_ids": [],
+        }
+
+    db.get_runtime_config = maintenance_config
+    client, _session_id = await _client(db=db)
+    try:
+        image_response = await client.get("/api/cards/image?card_id=8&variant=preview")
+        collection_response = await client.get("/api/cards/collection")
+
+        assert image_response.status == 200
+        assert image_response.headers["Content-Type"].startswith("image/webp")
+        assert collection_response.status == 503
+        assert (await collection_response.json())["error"] == "maintenance_mode"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_production_rejects_all_query_auth_but_accepts_authorization_header(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://game.example")

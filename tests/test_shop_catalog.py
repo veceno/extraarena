@@ -193,7 +193,7 @@ def test_shop_frontend_uses_catalog_endpoint_and_redesign_classes():
     assert "window.openExternalLink(historyUrl)" in source
 
 
-def test_shop_frontend_polishes_particles_copy_layout_and_debug_section():
+def test_shop_frontend_hides_redundant_section_copy_and_debug_section():
     source = INDEX.read_text(encoding="utf-8")
     styles = Path("webapp/styles.css").read_text(encoding="utf-8")
     shop_block = source.split("const ShopScreen", 1)[1].split(
@@ -202,7 +202,11 @@ def test_shop_frontend_polishes_particles_copy_layout_and_debug_section():
     )[0]
 
     assert "Видно, кому именно покупается" not in shop_block
-    assert "Размер зависит от следующего уровня, а не редкости" in shop_block
+    assert "Предложения для полученных карт. Размер зависит от следующего уровня, а не редкости." not in shop_block
+    assert "ежедневная ротация" not in shop_block
+    assert "<span>за гемы</span>" not in shop_block
+    assert "быстрый апгрейд" not in shop_block
+    assert "пакеты из игры" not in shop_block
     assert "Debug Section" not in shop_block
     assert "1 ключ (дебаг)" not in shop_block
     assert ".ea-shop-particle-card:not(.ea-shop-featured-particle) .ea-shop-particle-art" in styles

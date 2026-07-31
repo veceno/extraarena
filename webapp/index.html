@@ -5478,7 +5478,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=0932c437dcea">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=1a96eeb7cb37">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -8141,7 +8141,6 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
         <section className="ea-shop-section" data-shop-section="cases">
           <div className="ea-shop-section-title">
             <h2>Кейсы</h2>
-            <span>за гемы</span>
           </div>
           <div className="ea-shop-case-grid">
             {catalogCasePacks.map(function(p){
@@ -8167,13 +8166,11 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
         <section className="ea-shop-section" data-shop-section="particles">
           <div className="ea-shop-section-title">
             <h2>Частицы карт</h2>
-            <span>ежедневная ротация</span>
           </div>
           <div className="ea-shop-particles-panel">
             <div className="ea-shop-particles-head">
               <div>
                 <div className="ea-shop-eyebrow blue">Сегодня в продаже</div>
-                <p className="ea-shop-small-copy">Предложения для полученных карт. Размер зависит от следующего уровня, а не редкости.</p>
               </div>
               <div className="ea-shop-timer">⏳ {particlesTimer || '0:00:00'}</div>
             </div>
@@ -8218,7 +8215,6 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
         <section className="ea-shop-section" data-shop-section="coins">
           <div className="ea-shop-section-title">
             <h2>Монеты за гемы</h2>
-            <span>быстрый апгрейд</span>
           </div>
           <div className="ea-shop-currency-grid">
             {catalogCoinOffers.map(function(p){
@@ -8241,7 +8237,6 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
         <section className="ea-shop-section" data-shop-section="gems">
           <div className="ea-shop-section-title">
             <h2>Гемы за рубли</h2>
-            <span>пакеты из игры</span>
           </div>
           <div className="ea-shop-gem-grid">
             {catalogGemProducts.map(function(p){
@@ -11081,7 +11076,7 @@ const cardUpgradeCoins = (card, level = card?.level || 1) =>
 // cache-buster для сброса уже закэшированных immutable-ответов). Бампать только
 // для экстренного сброса; обычная регенерация арта теперь подхватывается
 // серверной revalidation (ETag/Last-Modified от FileResponse, max-age=3600).
-const CARD_IMG_VERSION = 2;
+const CARD_IMG_VERSION = 3;
 
 const cardImageUrl = (cardOrId, {variant = 'preview'} = {}) => {
   const id = typeof cardOrId === 'object' ? cardOrId?.id : cardOrId;
@@ -21855,6 +21850,6 @@ const renderExtraArenaApp = () => {
   renderExtraArenaApp();
 })();
 </script>
-<script src="index.compiled.js?v=0932c437dcea"></script>
+<script src="index.compiled.js?v=1a96eeb7cb37"></script>
 </body>
 </html>

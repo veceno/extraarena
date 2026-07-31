@@ -7755,6 +7755,7 @@ def create_web_app(
             "/api/mobile/client-version",
             "/api/mobile/android/releases/",
             "/api/community/news",
+            "/api/cards/image",
         )
         maintenance_on = bool((config.get("maintenance_mode") or {}).get("enabled", False))
         if maintenance_on and not is_admin and not path.startswith(maintenance_allowed):
