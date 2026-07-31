@@ -6091,7 +6091,7 @@ class Database:
                 ON CONFLICT (dedupe_key) DO NOTHING
                 RETURNING *, TRUE AS created
             )
-            SELECT *, created FROM inserted
+            SELECT * FROM inserted
             UNION ALL
             SELECT notification_outbox.*, FALSE AS created
             FROM notification_outbox

@@ -756,7 +756,10 @@ async def test_notification_retry_repairs_decision_link_after_insert_committed()
     assert rows[0]["returnclock_delivery_id"] == rows[1][
         "returnclock_delivery_id"
     ]
-    assert "UNION ALL" in inspect.getsource(Database.enqueue_notification)
+    source = inspect.getsource(Database.enqueue_notification)
+    assert "UNION ALL" in source
+    assert "SELECT * FROM inserted" in source
+    assert "SELECT *, created FROM inserted" not in source
 
 
 @pytest.mark.asyncio
