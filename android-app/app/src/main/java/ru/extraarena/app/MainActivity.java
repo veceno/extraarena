@@ -2660,7 +2660,7 @@ public class MainActivity extends Activity {
             setTopbar("ExtraID", "Назад");
             authKicker.setText("Новый аккаунт");
             authTitle.setText("Придумай\nпароль");
-            authSubtitle.setText("На этот email создадим ExtraID и отправим ссылку для подтверждения.");
+            authSubtitle.setText("На этот email создадим ExtraID и отправим 6-значный код подтверждения.");
             updateLoginSteps(2);
             setStageHeight(0);
             setFieldVisible(authEmailField, true, false);
@@ -2722,7 +2722,7 @@ public class MainActivity extends Activity {
             setTopbar("Telegram", "Назад");
             authKicker.setText("Новый ExtraID");
             authTitle.setText("Создай\nпароль");
-            authSubtitle.setText("Создадим ExtraID и отправим ссылку для подтверждения email.");
+            authSubtitle.setText("Создадим ExtraID и отправим 6-значный код подтверждения email.");
             updateLoginSteps(3);
             setStageHeight(0);
             setFieldVisible(authEmailField, true, false);
@@ -4013,45 +4013,28 @@ public class MainActivity extends Activity {
 
     private void showEmailVerificationPending(String email, boolean emailSent) {
         String cleanEmail = email == null ? "" : email.trim();
-        String message;
-        if (emailSent) {
-            message = "Мы отправили ссылку на " + cleanEmail
-                    + ". Перейди по ней, затем войди в ExtraID. "
-                    + "Текущая игра и прогресс на этом устройстве сохранены.";
-        } else {
-            message = "Email " + cleanEmail
-                    + " ещё не подтверждён. Текущая игра и прогресс на этом устройстве сохранены. "
-                    + "Нажми «Отправить ещё раз», чтобы запросить новое письмо.";
-        }
+        String message = emailSent
+                ? "Мы отправили 6-значный код на " + cleanEmail
+                        + ". Введи его ниже в течение 15 минут. "
+                        + "Текущая игра и прогресс на этом устройстве сохранены."
+                : "Email " + cleanEmail
+                        + " ещё не подтверждён. Нажми «Новый код», затем введи 6 цифр из письма. "
+                        + "Текущая игра и прогресс на этом устройстве сохранены.";
+        EditText codeInput = createDialogInput(
+                "000000",
+                InputType.TYPE_CLASS_NUMBER
+        );
+        codeInput.setGravity(Gravity.CENTER);
+        codeInput.setLetterSpacing(0.28f);
+        codeInput.setFilters(new InputFilter[]{new InputFilter.LengthFilter(6)});
+
         AlertDialog.Builder builder = new AlertDialog.Builder(this)
                 .setTitle("Подтверди email")
                 .setMessage(message)
-                .setPositiveButton("Понятно", null);
+                .setView(codeInput)
+                .setPositiveButton("Подтвердить", null);
         if (!cleanEmail.isEmpty()) {
-            builder.setNegativeButton("Отправить ещё раз", (dialog, which) ->
-                    AuthClient.resendVerificationEmail(
-                            MainActivity.this,
-                            cleanEmail,
-                            new AuthClient.SimpleCallback() {
-                                @Override
-                                public void onSuccess() {
-                                    runOnUiThread(() -> Toast.makeText(
-                                            MainActivity.this,
-                                            "Если ExtraID ожидает подтверждения, письмо отправлено",
-                                            Toast.LENGTH_LONG
-                                    ).show());
-                                }
-
-                                @Override
-                                public void onError(String errorMessage) {
-                                    runOnUiThread(() -> Toast.makeText(
-                                            MainActivity.this,
-                                            errorMessage,
-                                            Toast.LENGTH_LONG
-                                    ).show());
-                                }
-                            }
-                    ));
+            builder.setNegativeButton("Новый код", null);
         }
         if (!DeviceRegistrar.getAuthToken(this).isEmpty()) {
             builder.setNeutralButton(
@@ -4059,7 +4042,84 @@ public class MainActivity extends Activity {
                     (dialog, which) -> showChangePendingEmailDialog(cleanEmail)
             );
         }
-        builder.show();
+        AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(ignored -> {
+            View verify = dialog.getButton(DialogInterface.BUTTON_POSITIVE);
+            verify.setOnClickListener(v -> {
+                String code = codeInput.getText().toString().trim();
+                if (!code.matches("\\d{6}")) {
+                    codeInput.setError("Введи 6 цифр из письма");
+                    return;
+                }
+                codeInput.setEnabled(false);
+                verify.setEnabled(false);
+                AuthClient.verifyEmailCode(
+                        MainActivity.this,
+                        cleanEmail,
+                        code,
+                        new AuthClient.SimpleCallback() {
+                            @Override
+                            public void onSuccess() {
+                                runOnUiThread(() -> {
+                                    dialog.dismiss();
+                                    Toast.makeText(
+                                            MainActivity.this,
+                                            "Email подтверждён. Теперь можно войти в ExtraID",
+                                            Toast.LENGTH_LONG
+                                    ).show();
+                                });
+                            }
+
+                            @Override
+                            public void onError(String errorMessage) {
+                                runOnUiThread(() -> {
+                                    codeInput.setEnabled(true);
+                                    verify.setEnabled(true);
+                                    codeInput.setError(errorMessage);
+                                    codeInput.requestFocus();
+                                });
+                            }
+                        }
+                );
+            });
+            View resend = dialog.getButton(DialogInterface.BUTTON_NEGATIVE);
+            if (resend != null) {
+                resend.setOnClickListener(v -> {
+                    resend.setEnabled(false);
+                    AuthClient.resendVerificationEmail(
+                            MainActivity.this,
+                            cleanEmail,
+                            new AuthClient.SimpleCallback() {
+                                @Override
+                                public void onSuccess() {
+                                    runOnUiThread(() -> {
+                                        resend.setEnabled(true);
+                                        codeInput.setText("");
+                                        Toast.makeText(
+                                                MainActivity.this,
+                                                "Если ExtraID ожидает подтверждения, новый код отправлен",
+                                                Toast.LENGTH_LONG
+                                        ).show();
+                                    });
+                                }
+
+                                @Override
+                                public void onError(String errorMessage) {
+                                    runOnUiThread(() -> {
+                                        resend.setEnabled(true);
+                                        Toast.makeText(
+                                                MainActivity.this,
+                                                errorMessage,
+                                                Toast.LENGTH_LONG
+                                        ).show();
+                                    });
+                                }
+                            }
+                    );
+                });
+            }
+        });
+        dialog.show();
     }
 
     private void showChangePendingEmailDialog(String currentEmail) {
@@ -4072,7 +4132,7 @@ public class MainActivity extends Activity {
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Исправить email")
-                .setMessage("Новое письмо для подтверждения будет отправлено автоматически.")
+                .setMessage("Новый 6-значный код будет отправлен автоматически.")
                 .setView(input)
                 .setNegativeButton("Отмена", null)
                 .setPositiveButton("Сохранить", null)
@@ -4107,7 +4167,7 @@ public class MainActivity extends Activity {
                                     dialog.dismiss();
                                     Toast.makeText(
                                             MainActivity.this,
-                                            "Email изменён, новое письмо отправлено",
+                                            "Email изменён, новый код отправлен",
                                             Toast.LENGTH_LONG
                                     ).show();
                                     showEmailVerificationPending(newEmail, true);

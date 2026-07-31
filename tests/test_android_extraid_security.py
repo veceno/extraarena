@@ -117,14 +117,19 @@ def test_android_registration_handles_email_verification_without_replacing_activ
     )
     assert "Текущая игра и прогресс на этом устройстве сохранены." in activity
     assert '"/api/extraid/email/resend"' in auth
-    assert '"Отправить ещё раз"' in activity
-    assert "Если ExtraID ожидает подтверждения, письмо отправлено" in activity
+    assert '"/api/extraid/email/verify"' in auth
+    assert "static void verifyEmailCode(" in auth
+    assert 'body.put("code"' in auth
+    assert '"Новый код"' in activity
+    assert "Если ExtraID ожидает подтверждения, новый код отправлен" in activity
+    assert "code.matches(\"\\\\d{6}\")" in activity
+    assert "new InputFilter.LengthFilter(6)" in activity
     assert '"/api/extraid/email/change"' in auth
     assert "body,\n                        authToken" in auth
     assert '"Исправить email"' in activity
     assert "DeviceRegistrar.getAuthToken(MainActivity.this)" in activity
     assert "AuthClient.changeUnverifiedEmail(" in activity
-    assert "Email изменён, новое письмо отправлено" in activity
+    assert "Email изменён, новый код отправлен" in activity
 
 
 def test_android_webview_bridge_is_not_exposed_to_third_party_frames():

@@ -266,6 +266,30 @@ final class AuthClient {
         });
     }
 
+    static void verifyEmailCode(
+            Context context,
+            String email,
+            String code,
+            SimpleCallback callback
+    ) {
+        flushPendingRevocations(context);
+        EXECUTOR.execute(() -> {
+            try {
+                JSONObject body = new JSONObject();
+                body.put("email", email == null ? "" : email.trim().toLowerCase(Locale.ROOT));
+                body.put("code", code == null ? "" : code.trim());
+                JSONObject response = post(context, "/api/extraid/email/verify", body);
+                if (response.optBoolean("ok")) {
+                    callback.onSuccess();
+                } else {
+                    callback.onError(errorMessage(response));
+                }
+            } catch (Exception e) {
+                callback.onError(connectionMessage(e));
+            }
+        });
+    }
+
     static void changeUnverifiedEmail(
             Context context,
             String authToken,
@@ -660,7 +684,8 @@ final class AuthClient {
         if ("invalid_code".equals(error)) return "Неверный или просроченный код";
         if ("code_user_mismatch".equals(error)) return "Код выдан для другого Telegram ID";
         if ("extraid_already_exists".equals(error)) return "У этого Telegram-аккаунта уже есть ExtraID";
-        if ("email_not_verified".equals(error)) return "Подтверди email по ссылке из письма, затем войди снова";
+        if ("email_not_verified".equals(error)) return "Введи 6-значный код из письма, затем войди снова";
+        if ("invalid_or_expired_code".equals(error)) return "Неверный или просроченный код";
         if ("email_delivery_failed".equals(error)) return "Не удалось отправить письмо. Попробуй создать ExtraID позже";
         if ("email_delivery_unavailable".equals(error)) return "Отправка писем временно недоступна";
         if ("email_change_not_allowed".equals(error)) return "Email уже подтверждён или его нельзя изменить";

@@ -1272,11 +1272,17 @@ def test_extraid_email_verification_and_password_recovery_frontend_contract():
     assert "fetch('/api/extraid/register'" in extraid_block
     assert "buildUiAuthUrl('/api/extraid/register'" not in extraid_block
     assert "d.error === 'email_not_verified'" in extraid_block
+    assert "const doVerifyEmailCode = async () => {" in extraid_block
+    assert "body:JSON.stringify({email:normalizedEmail,code:normalizedCode})" in extraid_block
+    assert "autoComplete:'one-time-code'" in extraid_block
+    assert "maxLength:6" in extraid_block
+    assert "'Подтвердить email'" in extraid_block
+    assert "'Отправить новый код'" in extraid_block
     assert "/api/extraid/email/resend" in extraid_block
     assert "/api/extraid/email/change" in extraid_block
     assert "changeHeaders['X-Telegram-Init-Data'] = telegramAuth" in extraid_block
     assert "changeHeaders.Authorization = 'Bearer ' + emailChangeOwnerToken" in extraid_block
-    assert "Изменить email и отправить письмо" in extraid_block
+    assert "Изменить email и отправить код" in extraid_block
     assert "/api/extraid/password-reset/request" in extraid_block
     assert "/api/extraid/password-reset/confirm" in extraid_block
     assert "/api/extraid/email/cancel" in source

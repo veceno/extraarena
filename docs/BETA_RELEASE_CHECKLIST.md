@@ -73,7 +73,7 @@ python -m compileall main.py run_web.py infrastructure web core ai battle_engine
 
 - [ ] ExtraID identity migration: run the duplicate-identity/email preflight before traffic switch, review every quarantined legacy duplicate, and verify no active account is missing its immutable provider binding.
 - [ ] ExtraID Telegram: create and bind one ExtraID, confirm logout/delete controls are unavailable in Telegram, reopen the Mini App, and verify a second ExtraID cannot be created for the same Telegram identity.
-- [ ] ExtraID email: create a pending account, resend, correct a mistyped address from its owning Telegram/Android session, confirm once, verify the registration bonus is credited once, and verify old/stale links cannot confirm a replacement address.
+- [ ] ExtraID email: create a pending account, enter the 6-digit code, resend, correct a mistyped address from its owning Telegram/Android session, confirm once, verify the registration bonus is credited once, and verify old/stale codes cannot confirm a replacement address.
 - [ ] ExtraID recovery: request a password reset, use it once, verify all prior sessions are revoked, and confirm repeated/expired tokens return the same safe failure.
 - [ ] ExtraID expiry/cancel: cancel one unwanted verification and expire one pending registration in staging; verify email/nickname are released while pre-existing Telegram/Android game progress remains intact.
 - [ ] Staging smoke: repeat login, deck, battle, payment test-mode, rating, and admin-boundary checks on staging before promoting the build.

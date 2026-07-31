@@ -56,6 +56,23 @@ def _bot_auth_code_hash(code: str, purpose: str) -> str:
     return hmac.new(secret, message, hashlib.sha256).hexdigest()
 
 
+def _account_email_code_hash(code: str, email: str, token_id) -> str:
+    """Return a keyed digest so a token-table leak cannot reveal six-digit codes."""
+    normalized = str(code or "").strip()
+    if not re.fullmatch(r"\d{6}", normalized):
+        raise ValueError("invalid_email_verification_code")
+    normalized_email = str(email or "").strip().lower()
+    if not normalized_email:
+        raise ValueError("email_required")
+    normalized_token_id = str(_coerce_uuid(token_id))
+    secret = get_settings().jwt_secret.encode("utf-8")
+    message = (
+        "extraarena-email-code:verify_email:"
+        f"{normalized_email}:{normalized_token_id}:{normalized}"
+    ).encode("utf-8")
+    return hmac.new(secret, message, hashlib.sha256).hexdigest()
+
+
 class ExtraIDDatabase:
     def __init__(self, dsn: str):
         self._dsn = dsn
@@ -1539,6 +1556,46 @@ class ExtraIDDatabase:
             new_password_hash=None,
         )
 
+    async def consume_email_verification_code(
+        self,
+        *,
+        email: str,
+        code: str,
+    ) -> dict | None:
+        """Consume the latest active verification code for an email address."""
+        if not self._pool:
+            raise RuntimeError("ExtraID DB not connected")
+        normalized_email = str(email or "").strip().lower()
+        if not normalized_email:
+            return None
+        token_id = await self.fetchval(
+            """
+            SELECT t.id
+            FROM account_action_tokens t
+            JOIN extra_accounts a ON a.id = t.extra_account_id
+            WHERE LOWER(a.email) = LOWER($1)
+              AND t.purpose = 'verify_email'
+              AND t.consumed_at IS NULL
+              AND a.deleted_at IS NULL
+            ORDER BY t.created_at DESC
+            LIMIT 1
+            """,
+            normalized_email,
+        )
+        if not token_id:
+            return None
+        return await self._consume_account_action_token(
+            token_id=token_id,
+            token_hash=_account_email_code_hash(
+                code,
+                normalized_email,
+                token_id,
+            ),
+            purpose="verify_email",
+            new_password_hash=None,
+            verification_source="email_code",
+        )
+
     async def revoke_account_action_token(self, token_id) -> None:
         try:
             token_id = _coerce_uuid(token_id)
@@ -1610,6 +1667,7 @@ class ExtraIDDatabase:
         token_hash: str,
         purpose: str,
         new_password_hash: str | None,
+        verification_source: str = "email_token",
     ) -> dict | None:
         if not self._pool:
             raise RuntimeError("ExtraID DB not connected")
@@ -1682,7 +1740,7 @@ class ExtraIDDatabase:
                         UPDATE extra_accounts
                         SET is_email_verified = TRUE,
                             email_verification_required = FALSE,
-                            verification_source = 'email_token',
+                            verification_source = $2,
                             pending_expires_at = NULL,
                             email_verify_token = NULL,
                             email_verify_expires = NULL,
@@ -1690,6 +1748,7 @@ class ExtraIDDatabase:
                         WHERE id = $1 AND deleted_at IS NULL
                         """,
                         row["extra_account_id"],
+                        verification_source,
                     )
                     # The verification message contains a paired cancellation
                     # token. It must become unusable as soon as verification

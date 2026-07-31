@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import html as _html
 import ipaddress
 import logging
 import os
@@ -24,7 +25,11 @@ from aiohttp import web, ClientSession, ClientTimeout
 
 from infrastructure.config import get_settings
 from infrastructure.database import Database
-from infrastructure.extraid_database import ExtraIDDatabase, SYNTHETIC_USER_ID_MIN
+from infrastructure.extraid_database import (
+    ExtraIDDatabase,
+    SYNTHETIC_USER_ID_MIN,
+    _account_email_code_hash,
+)
 from infrastructure.push_notifications import build_android_push_payload
 from infrastructure.telegram_proxy import create_telegram_aiohttp_session
 
@@ -40,8 +45,9 @@ _EMAIL_RE = re.compile(
 _NICKNAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,20}$")
 _PASSWORD_MIN_CHARS = 8
 _BCRYPT_PASSWORD_MAX_BYTES = 72
-_EMAIL_VERIFY_TTL_SECONDS = 24 * 60 * 60
+_EMAIL_VERIFY_TTL_SECONDS = 15 * 60
 _PASSWORD_RESET_TTL_SECONDS = 30 * 60
+_EMAIL_VERIFY_CODE_RE = re.compile(r"^\d{6}$")
 _GENERIC_EMAIL_STATUS = "if_account_exists_email_sent"
 _TELEGRAM_TRANSFER_PURPOSE = "telegram_transfer"
 _EXTRAID_RECONCILE_BATCH_SIZE = 100
@@ -258,6 +264,12 @@ def _make_account_action_token() -> tuple[uuid.UUID, str, str]:
     return token_id, f"{token_id}.{secret}", token_hash
 
 
+def _make_email_verification_code(email: str) -> tuple[uuid.UUID, str, str]:
+    token_id = uuid.uuid4()
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    return token_id, code, _account_email_code_hash(code, email, token_id)
+
+
 def _parse_account_action_token(value: Any) -> tuple[uuid.UUID, str] | None:
     raw = str(value or "").strip()
     if not raw or len(raw) > 256:
@@ -270,6 +282,142 @@ def _parse_account_action_token(value: Any) -> tuple[uuid.UUID, str] | None:
     except (TypeError, ValueError):
         return None
     return token_id, hashlib.sha256(secret.encode("utf-8")).hexdigest()
+
+
+def _render_extraid_email(
+    *,
+    title: str,
+    intro: str,
+    ttl_seconds: int,
+    verification_code: str | None = None,
+    action_label: str | None = None,
+    action_url: str | None = None,
+    cancel_url: str | None = None,
+) -> tuple[str, str]:
+    ttl_minutes = max(1, int(ttl_seconds) // 60)
+    expiry_text = (
+        f"Код действует {ttl_minutes} минут и используется один раз."
+        if verification_code
+        else f"Ссылка действует {ttl_minutes} минут и используется один раз."
+    )
+    text_parts = [
+        "ExtraArena · ExtraID",
+        "",
+        title,
+        intro,
+    ]
+    if verification_code:
+        text_parts.extend(["", f"Код подтверждения: {verification_code}"])
+    if action_url and action_label:
+        text_parts.extend(["", f"{action_label}: {action_url}"])
+    text_parts.extend(
+        [
+            "",
+            expiry_text,
+            "Никому не сообщайте код, пароль или данные игровой сессии.",
+        ]
+    )
+    if cancel_url:
+        text_parts.extend(
+            [
+                "",
+                "Если вы не создавали ExtraID, отмените регистрацию:",
+                cancel_url,
+            ]
+        )
+    text = "\n".join(text_parts)
+
+    safe_title = _html.escape(title)
+    safe_intro = _html.escape(intro)
+    safe_expiry = _html.escape(expiry_text)
+    safe_code = _html.escape(str(verification_code or ""))
+    action_html = ""
+    if action_url and action_label:
+        safe_action_url = _html.escape(action_url, quote=True)
+        safe_action_label = _html.escape(action_label)
+        action_html = f"""
+          <tr>
+            <td style="padding:8px 36px 28px;text-align:center;">
+              <a href="{safe_action_url}" style="display:inline-block;padding:14px 28px;border-radius:12px;background:#f5921e;color:#ffffff;text-decoration:none;font-size:15px;font-weight:800;box-shadow:0 8px 24px rgba(245,146,30,.24);">{safe_action_label}</a>
+            </td>
+          </tr>"""
+    code_html = ""
+    if verification_code:
+        code_html = f"""
+          <tr>
+            <td style="padding:8px 36px 24px;">
+              <div style="border:1px solid #5b3fa0;border-radius:16px;background:#130d26;padding:20px 16px;text-align:center;font-family:Arial,sans-serif;">
+                <div style="margin-bottom:8px;color:#9c7de0;font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">Код подтверждения</div>
+                <div style="color:#ffb347;font-family:Menlo,Consolas,'Courier New',monospace;font-size:34px;line-height:1.2;font-weight:800;letter-spacing:9px;">{safe_code}</div>
+              </div>
+            </td>
+          </tr>"""
+    cancel_html = ""
+    if cancel_url:
+        safe_cancel_url = _html.escape(cancel_url, quote=True)
+        cancel_html = f"""
+          <tr>
+            <td style="padding:0 36px 28px;">
+              <div style="border-radius:12px;background:#26162f;padding:14px 16px;color:#c4b8e8;font-family:Arial,sans-serif;font-size:12px;line-height:1.55;">
+                <strong style="color:#f0ecff;">Не создавали ExtraID?</strong><br>
+                Не вводите код. <a href="{safe_cancel_url}" style="color:#ffb347;text-decoration:underline;">Отмените регистрацию</a>, чтобы освободить ваш email.
+              </div>
+            </td>
+          </tr>"""
+    preheader = _html.escape(
+        f"{title}. {expiry_text}",
+        quote=False,
+    )
+    year = datetime.now(timezone.utc).year
+    html = f"""<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>{safe_title}</title>
+  </head>
+  <body style="margin:0;padding:0;background:#0f0a1a;color:#f0ecff;font-family:Arial,sans-serif;">
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">{preheader}</div>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;background:#0f0a1a;">
+      <tr>
+        <td align="center" style="padding:28px 12px;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;max-width:560px;border-collapse:separate;background:#1a1030;border:1px solid #3d2a70;border-radius:22px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+            <tr>
+              <td style="height:5px;background:#f5921e;font-size:0;line-height:0;">&nbsp;</td>
+            </tr>
+            <tr>
+              <td style="padding:30px 36px 12px;text-align:center;">
+                <div style="display:inline-block;width:48px;height:48px;line-height:48px;border-radius:15px;background:#f5921e;color:#ffffff;font-family:Arial,sans-serif;font-size:18px;font-weight:900;">EA</div>
+                <div style="margin-top:13px;color:#9c7de0;font-family:Arial,sans-serif;font-size:11px;font-weight:800;letter-spacing:1.8px;text-transform:uppercase;">ExtraArena · ExtraID Security</div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:8px 36px 12px;text-align:center;font-family:Arial,sans-serif;">
+                <h1 style="margin:0 0 12px;color:#f0ecff;font-size:26px;line-height:1.2;font-weight:900;">{safe_title}</h1>
+                <p style="margin:0;color:#c4b8e8;font-size:15px;line-height:1.6;">{safe_intro}</p>
+              </td>
+            </tr>
+            {code_html}
+            {action_html}
+            <tr>
+              <td style="padding:0 36px 24px;text-align:center;font-family:Arial,sans-serif;">
+                <p style="margin:0 0 8px;color:#9c7de0;font-size:12px;line-height:1.5;">{safe_expiry}</p>
+                <p style="margin:0;color:#7a6fa0;font-size:11px;line-height:1.5;">Никому не сообщайте код, пароль или данные игровой сессии. Команда ExtraArena никогда не попросит их в сообщениях.</p>
+              </td>
+            </tr>
+            {cancel_html}
+            <tr>
+              <td style="padding:18px 36px;border-top:1px solid #2d1f52;text-align:center;color:#7a6fa0;font-family:Arial,sans-serif;font-size:10px;line-height:1.5;">
+                © {year} ExtraArena · Это автоматическое письмо, отвечать на него не нужно.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>"""
+    return text, html
 
 
 async def _get_any_extra_account_by_email(extraid_db: ExtraIDDatabase, email: str) -> dict | None:
@@ -448,16 +596,24 @@ async def _issue_account_email(
     base_url = _public_base_url()
     if not base_url and not callable(request.app.get("extraid_email_sender")):
         return False
-    token_id, token, token_hash = _make_account_action_token()
+    verification_code = None
+    token = None
     if purpose == "verify_email":
+        token_id, verification_code, token_hash = _make_email_verification_code(
+            str(extra["email"])
+        )
         ttl_seconds = _EMAIL_VERIFY_TTL_SECONDS
-        fragment_key = "extraid_verify_token"
-        subject = "Подтверждение email для ExtraID"
-        action_label = "Подтвердить email"
+        subject = "Код подтверждения ExtraID"
+        title = "Подтвердите email"
+        intro = "Введите шестизначный код в окне ExtraID, чтобы защитить аккаунт и включить вход по паролю."
+        action_label = None
     elif purpose == "password_reset":
+        token_id, token, token_hash = _make_account_action_token()
         ttl_seconds = _PASSWORD_RESET_TTL_SECONDS
         fragment_key = "extraid_reset_token"
         subject = "Сброс пароля ExtraID"
+        title = "Сбросьте пароль"
+        intro = "Мы получили запрос на смену пароля ExtraID. Нажмите кнопку ниже, чтобы продолжить."
         action_label = "Сбросить пароль"
     else:
         raise ValueError("invalid_account_email_purpose")
@@ -472,12 +628,15 @@ async def _issue_account_email(
     )
     if not issued:
         return False
-    # The raw token stays in the fragment and is never sent to the reverse proxy.
-    action_url = (
-        f"{base_url}/#{fragment_key}={quote(token, safe='')}"
-        if base_url
-        else token
-    )
+    action_url = None
+    if token is not None:
+        # Password-reset tokens stay in the fragment and are never sent to the
+        # reverse proxy. Email verification uses a short code instead.
+        action_url = (
+            f"{base_url}/#{fragment_key}={quote(token, safe='')}"
+            if base_url
+            else token
+        )
     cancel_token_id = None
     cancel_url = None
     if purpose == "verify_email":
@@ -499,25 +658,15 @@ async def _issue_account_email(
             if base_url
             else cancel_token
         )
-    text = (
-        f"{action_label}: {action_url}\n\n"
-        f"Ссылка действует {ttl_seconds // 60} минут и используется один раз."
+    text, html = _render_extraid_email(
+        title=title,
+        intro=intro,
+        ttl_seconds=ttl_seconds,
+        verification_code=verification_code,
+        action_label=action_label,
+        action_url=action_url,
+        cancel_url=cancel_url,
     )
-    html = (
-        "<p>Для завершения операции ExtraID откройте ссылку:</p>"
-        f'<p><a href="{action_url}">{action_label}</a></p>'
-        f"<p>Ссылка действует {ttl_seconds // 60} минут и используется один раз.</p>"
-    )
-    if cancel_url:
-        warning = (
-            "\n\nЕсли вы не создавали ExtraID, не подтверждайте адрес и отмените "
-            f"регистрацию: {cancel_url}"
-        )
-        text += warning
-        html += (
-            "<p><strong>Если вы не создавали ExtraID, не подтверждайте адрес.</strong></p>"
-            f'<p><a href="{cancel_url}">Отменить чужую регистрацию</a></p>'
-        )
     delivered = await _send_extraid_email(
         request,
         to_email=str(extra["email"]),
@@ -1754,16 +1903,15 @@ async def extraid_unverified_email_change_handler(request: web.Request) -> web.R
 async def extraid_email_verify_handler(request: web.Request) -> web.Response:
     db = _get_db(request)
     extraid_db = _get_extraid_db(request)
-    if request.rel_url.query.get("token"):
-        return web.json_response({"error": "token_in_url_not_allowed"}, status=400)
+    if any(
+        request.rel_url.query.get(name)
+        for name in ("token", "code", "email")
+    ):
+        return web.json_response({"error": "code_in_url_not_allowed"}, status=400)
     try:
         data = await request.json()
     except Exception:
         data = {}
-    token = str(data.get("token") or "").strip()
-    parsed = _parse_account_action_token(token)
-    if not parsed:
-        return web.json_response({"error": "invalid_or_expired_token"}, status=400)
     if not await _check_rate_limit_for_request(
         request,
         f"email_verify:client:{_client_rate_key(request)}",
@@ -1771,13 +1919,46 @@ async def extraid_email_verify_handler(request: web.Request) -> web.Response:
         900,
     ):
         return web.json_response({"error": "rate_limited"}, status=429)
-    token_id, token_hash = parsed
-    consumed = await extraid_db.consume_email_verification_token(
-        token_id=token_id,
-        token_hash=token_hash,
-    )
+
+    email = str(data.get("email") or "").strip().lower()
+    code = str(data.get("code") or "").strip()
+    if email or code:
+        if not _valid_email(email) or not _EMAIL_VERIFY_CODE_RE.fullmatch(code):
+            return web.json_response(
+                {"error": "invalid_or_expired_code"},
+                status=400,
+            )
+        email_key = _rate_limit_subject("email", email)
+        if not await _check_rate_limit_for_request(
+            request,
+            f"email_verify:email:{email_key}",
+            8,
+            900,
+        ):
+            return web.json_response({"error": "rate_limited"}, status=429)
+        consumed = await extraid_db.consume_email_verification_code(
+            email=email,
+            code=code,
+        )
+        invalid_error = "invalid_or_expired_code"
+    else:
+        # Compatibility window for links already issued before the code flow
+        # shipped. New verification emails never contain this token.
+        token = str(data.get("token") or "").strip()
+        parsed = _parse_account_action_token(token)
+        if not parsed:
+            return web.json_response(
+                {"error": "invalid_or_expired_code"},
+                status=400,
+            )
+        token_id, token_hash = parsed
+        consumed = await extraid_db.consume_email_verification_token(
+            token_id=token_id,
+            token_hash=token_hash,
+        )
+        invalid_error = "invalid_or_expired_token"
     if not consumed:
-        return web.json_response({"error": "invalid_or_expired_token"}, status=400)
+        return web.json_response({"error": invalid_error}, status=400)
     primary_link = await db.ensure_extra_account_link(
         user_id=int(consumed["user_id"]),
         extra_account_id=consumed["extra_account_id"],

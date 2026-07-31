@@ -2139,7 +2139,9 @@ async def test_generic_email_request_queues_without_waiting_for_sender(
 
 
 @pytest.mark.asyncio
-async def test_email_outbox_worker_issues_hash_only_and_sends_fragment_link():
+async def test_email_outbox_worker_issues_hash_only_and_sends_branded_code_email(
+    monkeypatch,
+):
     class WorkerDB(FakeExtraIDDB):
         def __init__(self):
             super().__init__()
@@ -2182,6 +2184,12 @@ async def test_email_outbox_worker_issues_hash_only_and_sends_fragment_link():
         return True
 
     extra_db = WorkerDB()
+    verification_token_id = uuid.uuid4()
+    monkeypatch.setattr(
+        extraid_handlers,
+        "_make_email_verification_code",
+        lambda _email: (verification_token_id, "123456", "a" * 64),
+    )
     app = {
         "extraid_db": extra_db,
         "extraid_email_sender": sender,
@@ -2198,9 +2206,110 @@ async def test_email_outbox_worker_issues_hash_only_and_sends_fragment_link():
     }
     assert all(len(row["token_hash"]) == 64 for row in extra_db.action_tokens)
     assert all("token" not in row for row in extra_db.action_tokens)
-    assert "#extraid_verify_token=" in sent[0]["text"]
+    assert "Код подтверждения: 123456" in sent[0]["text"]
+    assert "#extraid_verify_token=" not in sent[0]["text"]
     assert "#extraid_cancel_token=" in sent[0]["text"]
     assert "?extraid_" not in sent[0]["text"]
+    assert "<!doctype html>" in sent[0]["html"]
+    assert "ExtraID Security" in sent[0]["html"]
+    assert "123456" in sent[0]["html"]
+    assert "background:#f5921e" in sent[0]["html"]
+
+
+@pytest.mark.asyncio
+async def test_email_verification_accepts_six_digit_code_and_links_account():
+    game_db = FakeGameDB()
+
+    class VerificationCodeDB(FakeExtraIDDB):
+        def __init__(self):
+            super().__init__()
+            self.consumed_code = None
+
+        async def consume_email_verification_code(self, *, email, code):
+            self.consumed_code = (email, code)
+            return {
+                "extra_account_id": self.account_id,
+                "user_id": 9_100_000_000_123,
+                "reg_bonus_claimed": False,
+            }
+
+    extra_db = VerificationCodeDB()
+    request = FakeRequest(
+        {"email": "Player@Example.com", "code": "123456"},
+        app={"db": game_db, "extraid_db": extra_db},
+    )
+
+    response = await extraid_handlers.extraid_email_verify_handler(request)
+    body = json.loads(response.text)
+
+    assert response.status == 200
+    assert body == {"ok": True, "email_verified": True, "reg_bonus": False}
+    assert extra_db.consumed_code == (
+        "player@example.com",
+        "123456",
+    )
+    assert (
+        "ensure_extra_account_link",
+        (9_100_000_000_123, extra_db.account_id, None),
+    ) in game_db.executed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"email": "player@example.com", "code": "12345"},
+        {"email": "player@example.com", "code": "12345a"},
+        {"email": "not-an-email", "code": "123456"},
+        {"email": "", "code": "123456"},
+    ],
+)
+async def test_email_verification_rejects_malformed_code_without_database_lookup(
+    payload,
+):
+    class NoLookupDB(FakeExtraIDDB):
+        async def consume_email_verification_code(self, **_kwargs):
+            raise AssertionError("malformed verification input must not reach DB")
+
+    request = FakeRequest(
+        payload,
+        app={"db": FakeGameDB(), "extraid_db": NoLookupDB()},
+    )
+
+    response = await extraid_handlers.extraid_email_verify_handler(request)
+
+    assert response.status == 400
+    assert json.loads(response.text)["error"] == "invalid_or_expired_code"
+
+
+@pytest.mark.asyncio
+async def test_email_verification_rejects_code_and_email_in_query():
+    request = FakeRequest(
+        {},
+        query={"code": "123456", "email": "player@example.com"},
+        app={"db": FakeGameDB(), "extraid_db": FakeExtraIDDB()},
+    )
+
+    response = await extraid_handlers.extraid_email_verify_handler(request)
+
+    assert response.status == 400
+    assert json.loads(response.text)["error"] == "code_in_url_not_allowed"
+
+
+def test_email_verification_code_is_six_digits_and_keyed():
+    _token_id, code, code_hash = extraid_handlers._make_email_verification_code(
+        "player@example.com"
+    )
+
+    assert len(code) == 6
+    assert code.isdigit()
+    assert len(code_hash) == 64
+    assert code not in code_hash
+    assert code_hash != extraid_handlers._account_email_code_hash(
+        code,
+        "other@example.com",
+        _token_id,
+    )
 
 
 @pytest.mark.asyncio

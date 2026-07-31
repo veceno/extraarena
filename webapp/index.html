@@ -5352,7 +5352,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=fb03186f41aa">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=62d0b7391aa7">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -9412,6 +9412,7 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
   const [newPassword, setNewPassword] = React.useState('');
   const [confirmPassword, setConfirmPassword] = React.useState('');
   const [resetToken, setResetToken] = React.useState(initialActionToken || '');
+  const [verificationCode, setVerificationCode] = React.useState('');
   const [actionStatus, setActionStatus] = React.useState('');
   const [replacementEmail, setReplacementEmail] = React.useState('');
   const telegramAuth = getTelegramInitData();
@@ -9507,11 +9508,14 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
             is_email_verified:false
           });
           await onReloadProfile();
-          onSetView('profile');
           window.showToast?.(`ExtraID создан и привязан к ${platformLabel}`,'success',3000);
           if(d.reg_bonus) window.showToast?.('Бонус: +3 ключа!','success',3000);
           if(d.email_verification_required) {
-            window.showToast?.(d.email_sent ? 'Проверь почту и подтверди email' : 'Email пока не отправлен — повтори отправку в настройках','info',4500);
+            setActionStatus(d.email_sent ? 'verification_sent' : 'verification_pending');
+            onSetView('verify_email');
+            window.showToast?.(d.email_sent ? 'Код подтверждения отправлен на email' : 'Код пока не отправлен — запроси его ещё раз','info',4500);
+          } else {
+            onSetView('profile');
           }
         } else if (d.email_verification_required) {
           setActionStatus(d.email_sent ? 'verification_sent' : 'verification_pending');
@@ -9577,7 +9581,8 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
         body:JSON.stringify({email})
       });
       setActionStatus('verification_sent');
-      window.showToast?.('Если аккаунт существует, письмо отправлено','success',3500);
+      setVerificationCode('');
+      window.showToast?.('Если аккаунт существует, новый код отправлен','success',3500);
     } catch (_) {
       setErr('Ошибка сети');
     }
@@ -9622,10 +9627,59 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
       }
       setEmail(normalizedEmail);
       setReplacementEmail('');
+      setVerificationCode('');
       setActionStatus('verification_sent');
       const refreshed = await loadExtraIDProfile(telegramAuth || emailChangeOwnerToken);
       if (refreshed) onExtraIDData(refreshed);
-      window.showToast?.('Email изменён. Новое письмо отправлено','success',4000);
+      window.showToast?.('Email изменён. Новый код отправлен','success',4000);
+    } catch (_) {
+      setErr('Ошибка сети');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const doVerifyEmailCode = async () => {
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedCode = verificationCode.replace(/\D/g,'').slice(0,6);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      setErr('Введите email, на который пришёл код');
+      return;
+    }
+    if (!/^\d{6}$/.test(normalizedCode)) {
+      setErr('Введите 6 цифр из письма');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      const response = await fetch('/api/extraid/email/verify', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({email:normalizedEmail,code:normalizedCode})
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) {
+        const message = result.error === 'rate_limited'
+          ? 'Слишком много попыток. Запроси новый код позже'
+          : 'Неверный или просроченный код';
+        setErr(message);
+        return;
+      }
+      setVerificationCode('');
+      setActionStatus('verification_complete');
+      if (isPlatformFlow) {
+        const refreshed = await loadExtraIDProfile(resolveExtraIDAuthData());
+        if (refreshed) onExtraIDData(refreshed);
+        await onReloadProfile();
+        onSetView('profile');
+      } else {
+        onSetView('login');
+      }
+      window.showToast?.('Email подтверждён','success',3500);
+      if (result.reg_bonus) {
+        setTimeout(()=>window.showToast?.('Бонус ExtraID: +3 ключа','success',3500),700);
+      }
     } catch (_) {
       setErr('Ошибка сети');
     } finally {
@@ -9874,16 +9928,31 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
       React.createElement('div',{key:'icon',style:{width:'64px',height:'64px',borderRadius:'20px',background:T.purple2,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'30px',margin:'4px auto 16px'}},'📧'),
       React.createElement('h2',{key:'h',style:{fontSize:'21px',fontWeight:'900',color:T.white,textAlign:'center',fontFamily:"'Exo 2',sans-serif",marginBottom:'8px'}},'Подтверди email'),
       React.createElement('p',{key:'p',style:{fontSize:'14px',color:T.grey1,textAlign:'center',fontFamily:"'Inter',sans-serif",lineHeight:1.5,marginBottom:'16px'}},
-        email ? `Мы отправили ссылку на ${email}. Она нужна для входа по паролю и восстановления аккаунта.` : 'Открой ссылку из письма, чтобы включить вход по паролю и восстановление аккаунта.'
+        email ? `Введи 6-значный код, отправленный на ${email}. Код действует 15 минут.` : 'Укажи email и введи 6-значный код из письма. Код действует 15 минут.'
       ),
-      actionStatus==='verification_sent' ? React.createElement('div',{key:'sent',style:{padding:'10px 12px',background:'#064e3b55',border:'1px solid #10b98155',borderRadius:'10px',color:'#6ee7b7',fontSize:'12px',fontFamily:"'Inter',sans-serif",marginBottom:'12px',textAlign:'center'}},'Письмо отправлено. Проверь также папку «Спам».') : null,
+      actionStatus==='verification_sent' ? React.createElement('div',{key:'sent',style:{padding:'10px 12px',background:'#064e3b55',border:'1px solid #10b98155',borderRadius:'10px',color:'#6ee7b7',fontSize:'12px',fontFamily:"'Inter',sans-serif",marginBottom:'12px',textAlign:'center'}},'Новый код отправлен. Проверь также папку «Спам».') : null,
       error?React.createElement('div',{key:'err',style:{padding:'10px 14px',background:T.red+'20',border:'1px solid '+T.red+'40',borderRadius:'10px',color:T.red,fontSize:'13px',marginBottom:'12px',fontFamily:"'Inter',sans-serif"}},error):null,
-      !email ? React.createElement('input',{key:'email',type:'email',value:email,onChange:(e)=>setEmail(e.target.value),placeholder:'you@example.com',autoComplete:'email',style:{...inputStyle('email'),marginBottom:'12px'}}) : null,
-      React.createElement('button',{key:'resend',disabled:loading,onClick:doResendVerification,style:{width:'100%',height:'48px',borderRadius:'12px',background:T.orange,border:'none',color:'#fff',fontSize:'15px',fontWeight:'800',cursor:loading?'not-allowed':'pointer',opacity:loading?.6:1,fontFamily:"'Exo 2',sans-serif"}},loading?'Отправляем...':'Отправить письмо ещё раз'),
+      React.createElement('input',{key:'email',type:'email',value:email,onChange:(e)=>setEmail(e.target.value),placeholder:'you@example.com',autoComplete:'email',style:{...inputStyle('email'),marginBottom:'10px'}}),
+      React.createElement('input',{
+        key:'code',
+        type:'text',
+        inputMode:'numeric',
+        pattern:'[0-9]*',
+        maxLength:6,
+        autoComplete:'one-time-code',
+        value:verificationCode,
+        onChange:(event)=>setVerificationCode(event.target.value.replace(/\D/g,'').slice(0,6)),
+        onKeyDown:(event)=>{if(event.key==='Enter')doVerifyEmailCode();},
+        placeholder:'000000',
+        'aria-label':'Шестизначный код подтверждения',
+        style:{...inputStyle('verificationCode'),marginBottom:'12px',textAlign:'center',fontSize:'27px',fontWeight:'900',letterSpacing:'8px',fontFamily:"'Exo 2',monospace",fontVariantNumeric:'tabular-nums'}
+      }),
+      React.createElement('button',{key:'verify',disabled:loading||verificationCode.length!==6,onClick:doVerifyEmailCode,style:{width:'100%',height:'50px',borderRadius:'12px',background:loading||verificationCode.length!==6?T.purple2:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',color:'#fff',fontSize:'15px',fontWeight:'900',cursor:loading||verificationCode.length!==6?'not-allowed':'pointer',opacity:loading?.65:1,fontFamily:"'Exo 2',sans-serif",boxShadow:loading||verificationCode.length!==6?'none':'0 5px 18px rgba(245,146,30,.25)'}},loading?'Проверяем...':'Подтвердить email'),
+      React.createElement('button',{key:'resend',disabled:loading,onClick:doResendVerification,style:{width:'100%',padding:'12px',background:'none',border:'none',color:T.grey1,fontSize:'13px',fontWeight:'600',cursor:loading?'not-allowed':'pointer',opacity:loading?.6:1,fontFamily:"'Inter',sans-serif"}},'Отправить новый код'),
       canChangeUnverifiedEmail ? React.createElement('div',{key:'changeEmail',style:{marginTop:'14px',padding:'12px',background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'12px'}},
         React.createElement('div',{style:{fontSize:'12px',color:T.grey1,fontFamily:"'Inter',sans-serif",marginBottom:'8px'}},'Ошиблись в адресе? Пока email не подтверждён, его можно безопасно заменить из текущей игровой сессии.'),
         React.createElement('input',{type:'email',value:replacementEmail,onChange:(event)=>setReplacementEmail(event.target.value),placeholder:'Новый email',autoComplete:'email',style:{...inputStyle('replacementEmail'),marginBottom:'9px'}}),
-        React.createElement('button',{disabled:loading,onClick:doChangeUnverifiedEmail,style:{width:'100%',height:'42px',borderRadius:'10px',background:T.purple2,border:`1px solid ${T.purple1}`,color:T.white,fontSize:'13px',fontWeight:'700',cursor:loading?'not-allowed':'pointer',opacity:loading?.6:1,fontFamily:"'Exo 2',sans-serif"}},'Изменить email и отправить письмо')
+        React.createElement('button',{disabled:loading,onClick:doChangeUnverifiedEmail,style:{width:'100%',height:'42px',borderRadius:'10px',background:T.purple2,border:`1px solid ${T.purple1}`,color:T.white,fontSize:'13px',fontWeight:'700',cursor:loading?'not-allowed':'pointer',opacity:loading?.6:1,fontFamily:"'Exo 2',sans-serif"}},'Изменить email и отправить код')
       ) : null,
       !isPlatformFlow ? React.createElement('button',{key:'login',onClick:()=>back('login'),style:{width:'100%',padding:'12px',background:'none',border:'none',color:T.grey1,fontSize:'13px',cursor:'pointer',fontFamily:"'Inter',sans-serif"}},'Вернуться ко входу') : null
     ];
@@ -21650,6 +21719,6 @@ const renderExtraArenaApp = () => {
   renderExtraArenaApp();
 })();
 </script>
-<script src="index.compiled.js?v=fb03186f41aa"></script>
+<script src="index.compiled.js?v=62d0b7391aa7"></script>
 </body>
 </html>
