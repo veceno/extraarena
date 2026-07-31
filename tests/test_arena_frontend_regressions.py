@@ -1792,9 +1792,10 @@ def test_quests_sheet_replaces_daily_login_with_drift_free_countdown():
     # Fixed full-viewport overlay above the main menu but below toasts (z=200, mirroring the old sheet).
     assert "position:'fixed',inset:0,zIndex:200" in block
     # Art background uses the quests.jpg asset.
-    assert "/DesignAssets/Images/quests.jpg" in block
+    assert "/DesignAssets/Images/quests.jpg?v=17fd5cf87502" in block
     assert Path("DesignAssets/Images/quests.jpg").is_file()
     assert Path("DesignAssets/MainMenu/Icons/Quests.png").is_file()
+    assert "quests:        ICON_ROOT+'Quests.png?v=dd5968b3b3f8'" in source
     # Sticky glass header with a "Сброс" countdown chip.
     assert ">Сброс<" in block and "fmtTimer(resetSeconds)" in block
     # Summary block: eyebrow + h2 + "Выполнено X/5" score chip.
