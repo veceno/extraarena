@@ -1793,6 +1793,8 @@ def test_quests_sheet_replaces_daily_login_with_drift_free_countdown():
     assert "position:'fixed',inset:0,zIndex:200" in block
     # Art background uses the quests.jpg asset.
     assert "/DesignAssets/Images/quests.jpg" in block
+    assert Path("DesignAssets/Images/quests.jpg").is_file()
+    assert Path("DesignAssets/MainMenu/Icons/Quests.png").is_file()
     # Sticky glass header with a "Сброс" countdown chip.
     assert ">Сброс<" in block and "fmtTimer(resetSeconds)" in block
     # Summary block: eyebrow + h2 + "Выполнено X/5" score chip.
@@ -1815,6 +1817,7 @@ def test_quests_sheet_replaces_daily_login_with_drift_free_countdown():
     assert "✓ Получено" in block
     assert "✓ Забрано" not in block
     assert "/DesignAssets/MainMenu/Generator/Key.png" in block
+    assert "filter:'brightness(0) invert(1) drop-shadow(" in block
     assert "/DesignAssets/Cases/Case.png" not in block
     # Claim posts to the new endpoint.
     assert "/api/daily-quests/claim" in block
