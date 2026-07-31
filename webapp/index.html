@@ -5478,7 +5478,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=1a96eeb7cb37">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=b8358c6b868e">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -11076,7 +11076,7 @@ const cardUpgradeCoins = (card, level = card?.level || 1) =>
 // cache-buster для сброса уже закэшированных immutable-ответов). Бампать только
 // для экстренного сброса; обычная регенерация арта теперь подхватывается
 // серверной revalidation (ETag/Last-Modified от FileResponse, max-age=3600).
-const CARD_IMG_VERSION = 3;
+const CARD_IMG_VERSION = 4;
 
 const cardImageUrl = (cardOrId, {variant = 'preview'} = {}) => {
   const id = typeof cardOrId === 'object' ? cardOrId?.id : cardOrId;
@@ -21850,6 +21850,6 @@ const renderExtraArenaApp = () => {
   renderExtraArenaApp();
 })();
 </script>
-<script src="index.compiled.js?v=1a96eeb7cb37"></script>
+<script src="index.compiled.js?v=b8358c6b868e"></script>
 </body>
 </html>

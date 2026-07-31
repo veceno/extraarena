@@ -1086,6 +1086,7 @@ async def test_maintenance_allows_card_images_but_keeps_collection_closed():
 
         assert image_response.status == 200
         assert image_response.headers["Content-Type"].startswith("image/webp")
+        assert await image_response.read()
         assert collection_response.status == 503
         assert (await collection_response.json())["error"] == "maintenance_mode"
     finally:

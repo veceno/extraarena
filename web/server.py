@@ -21266,9 +21266,18 @@ def create_web_app(
                 if asset_variant == "preview" and card_image_path.parent == card_assets.CARD_PREVIEW_ASSETS_DIR
                 else "public, max-age=86400"
             )
+            content_type = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".webp": "image/webp",
+            }.get(card_image_path.suffix.lower(), "application/octet-stream")
             return web.FileResponse(
                 card_image_path,
-                headers={"Cache-Control": cache_control},
+                headers={
+                    "Cache-Control": cache_control,
+                    "Content-Type": content_type,
+                },
             )
         except Exception as e:
             import logging
