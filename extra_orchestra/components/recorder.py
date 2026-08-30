@@ -94,11 +94,12 @@ def _capture_webm(
     width = int(cfg.get("width", 414))
     height = int(cfg.get("height", 896))
     headless = bool(cfg.get("headless", True))
-    # device_scale_factor повышает чёткость записи, сохраняя мобильный CSS-
-    # viewport (≤420px → срабатывает @media phone-брейкпоинт arena-styles.css).
+    # CSS-viewport обязан остаться мобильным (≤420px). Playwright записывает
+    # video в CSS-пикселях; если запросить здесь удвоенный record_video_size,
+    # Chromium кладёт маленький кадр в левый верхний угол большого canvas.
+    # Поэтому захватываем ровно viewport, а upscale до dsf применяем ниже в
+    # ffmpeg при сборке финального MP4.
     dsf = max(1, int(cfg.get("device_scale_factor", 2)))
-    rec_w = width * dsf
-    rec_h = height * dsf
 
     tmpdir = Path(tempfile.mkdtemp(prefix="orch-rec-"))
     webm_path: Optional[Path] = None
@@ -117,7 +118,7 @@ def _capture_webm(
             viewport={"width": width, "height": height},
             device_scale_factor=dsf,
             record_video_dir=str(tmpdir),
-            record_video_size={"width": rec_w, "height": rec_h},
+            record_video_size={"width": width, "height": height},
         )
         context.add_init_script(INIT_SCRIPT)
         page = context.new_page()
@@ -195,10 +196,13 @@ def record_run_to_mp4(
         timeline = build_audio_timeline(frames) if cfg.get("with_audio", False) else []
         logger.info("audio timeline: %d clips (with_audio=%s, crf=%d, preset=%s)",
                     len(timeline), cfg.get("with_audio"), crf, preset)
+        output_scale = max(1, int(cfg.get("device_scale_factor", 2)))
         mp4 = mix_audio_into_mp4(
             webm_path, timeline, Path(out_path),
             fps=fps, crf=crf, preset=preset,
             music_path=ARENA_MUSIC_PATH if cfg.get("with_audio", False) else None,
+            output_width=int(cfg.get("width", 414)) * output_scale,
+            output_height=int(cfg.get("height", 896)) * output_scale,
         )
         return str(mp4)
     finally:

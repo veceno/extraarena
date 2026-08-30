@@ -171,6 +171,8 @@ def mix_audio_into_mp4(
     preset: str = "slow",
     music_path: Optional[Path] = None,
     music_volume: float = ARENA_MUSIC_VOLUME,
+    output_width: Optional[int] = None,
+    output_height: Optional[int] = None,
 ) -> Path:
     """Смиксовать видео + SFX-timeline (+ зацикленная музыка) → mp4 (libx264 + aac).
 
@@ -184,11 +186,21 @@ def mix_audio_into_mp4(
     out_mp4 = Path(out_mp4)
     out_mp4.parent.mkdir(parents=True, exist_ok=True)
 
+    video_filter: List[str] = []
+    if output_width is not None or output_height is not None:
+        if not (output_width and output_height):
+            raise ValueError("output_width and output_height must be set together")
+        video_filter = [
+            "-vf",
+            f"scale={int(output_width)}:{int(output_height)}:flags=lanczos",
+        ]
+
     has_music = bool(music_path) and Path(music_path).exists()
 
     if not timeline and not has_music:
         cmd = [
             "ffmpeg", "-y", "-i", str(video_webm),
+            *video_filter,
             "-c:v", "libx264", "-preset", str(preset), "-crf", str(int(crf)),
             "-pix_fmt", "yuv420p", "-r", str(fps),
             "-movflags", "+faststart", str(out_mp4),
@@ -229,6 +241,7 @@ def mix_audio_into_mp4(
         "ffmpeg", "-y", *inputs,
         "-filter_complex", filter_complex,
         "-map", "0:v", "-map", "[aout]",
+        *video_filter,
         "-c:v", "libx264", "-preset", str(preset), "-crf", str(int(crf)),
         "-pix_fmt", "yuv420p", "-r", str(fps),
         "-c:a", "aac", "-b:a", "192k", "-shortest",

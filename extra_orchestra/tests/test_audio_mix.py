@@ -94,6 +94,21 @@ def test_mix_audio_video_only_when_empty_timeline(monkeypatch, tmp_path):
     assert "-c:a" not in cmd
 
 
+def test_mix_audio_scales_mobile_capture_to_requested_output(monkeypatch, tmp_path):
+    webm = tmp_path / "v.webm"; webm.write_bytes(b"x")
+    out = tmp_path / "o.mp4"
+    captured = {}
+
+    def fake_run(cmd, check, capture_output):
+        captured["cmd"] = cmd; out.write_bytes(b"mp4"); return mock.MagicMock(returncode=0)
+
+    monkeypatch.setattr(audio_mix.subprocess, "run", fake_run)
+    mix_audio_into_mp4(webm, [], out, output_width=828, output_height=1792)
+    cmd = captured["cmd"]
+    assert "-vf" in cmd
+    assert cmd[cmd.index("-vf") + 1] == "scale=828:1792:flags=lanczos"
+
+
 def test_mix_audio_music_added_to_filter(monkeypatch, tmp_path):
     webm = tmp_path / "v.webm"; webm.write_bytes(b"x")
     out = tmp_path / "o.mp4"

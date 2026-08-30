@@ -318,7 +318,7 @@ save/load в `scenarios/*.json`. **Path-traversal guard:** `load(name)` →
 `_capture_webm(run, cfg, viewer_uid, *, base_url, speed, extra_wait_ms) →
 (webm_path, tmpdir)` — общая стадия захвата (переиспользуется mp4 и gif).
 Playwright sync_api: headless Chromium, мобильный портретный viewport
-(414×896 CSS × `device_scale_factor` → 828×1792 webm), `record_video_dir`,
+(414×896 CSS webm), `record_video_dir`,
 `add_init_script` (stub `window.io`, `ExtraArenaApp=true`), `page.route`
 нейтрализует external CDN (telegram-web-app.js, socket.io.min.js) для
 offline-детерминизма, ждёт `window.__orchestraDone`, `context.close()` → webm.
@@ -331,7 +331,8 @@ offline-детерминизма, ждёт `window.__orchestraDone`, `context.cl
 `build_audio_timeline(frames)` — из `sound_events`+`card_sfx_config.json`
 строит `[(offset_ms, wav_path, volume)]` (deploy сразу, mechanic ~+200ms,
 attack сразу). `mix_audio_into_mp4(webm, timeline, out, *, fps, crf, preset,
-music_path?, music_volume)` → ffmpeg: видео `libx264 -preset {preset} -crf
+music_path?, music_volume, output_width?, output_height?)` → ffmpeg: видео
+`scale` (если задан финальный размер) + `libx264 -preset {preset} -crf
 {crf} -pix_fmt yuv420p -r {fps} -movflags +faststart`; аудио — `adelay`+`volume`
 на каждый клип + `amix` (чанкование ≤32 входов, RISK G) + зацикленная
 `arena_theme.wav` (`-stream_loop -1` + `-shortest`, volume 0.3) → mux `aac`.
@@ -431,7 +432,9 @@ URL `/player?…&ea_platform=android_app` обязателен (внешний-b
 
 Запись и предпросмотр — мобильный портрет. Ширина ≤420px CSS → срабатывает
 `@media (max-width:420px)` из `arena-styles.css` → мобильный лейаут арены (а не
-десктоп-версия). webm/mp4 = 414×896 CSS × `device_scale_factor=2` = **828×1792**.
+десктоп-версия). WebM захватывается в CSS-размере 414×896; финальный MP4
+масштабируется Lanczos до **828×1792** по `device_scale_factor=2`. Это не даёт
+Chromium поместить мобильный canvas в угол enlarged video surface.
 Предпросмотр: `/preview` отдаёт `preview.html` — «телефон»-обёртку с
 `<iframe src="/player?…">` фиксированного размера 414×896 (`aspect-ratio`,
 `width:min(414px,96vw,44.36vh)`). У iframe свой viewport → media-query
